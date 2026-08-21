@@ -1,5 +1,4 @@
 from __future__ import annotations
-import warnings
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -7,13 +6,12 @@ if TYPE_CHECKING:
     from ..network_management.reservation import Reservation
     from ..resource_management.memory_manager import MemoryInfo
 
-from .app import App
 from ..kernel.event import Event
 from ..kernel.process import Process
 from ..utils import log
 
 
-class RequestApp(App):
+class RequestApp:
     """Code for the request application.
 
         This application will create a request for entanglement.
@@ -37,7 +35,8 @@ class RequestApp(App):
     """
 
     def __init__(self, node: QuantumRouter):
-        super().__init__(node)
+        self.node: QuantumRouter = node
+        self.node.set_app(self)
         self.responder: str = ""
         self.start_t: int = -1
         self.end_t: int = -1
@@ -47,6 +46,7 @@ class RequestApp(App):
         self.memory_counter: int = 0
         self.path: list[str] = []
         self.memo_to_reservation: dict[int, Reservation] = {}
+        self.name: str = f"{self.node.name}.RequestApp"
 
     def start(self, responder: str, start_t: int, end_t: int, memo_size: int, fidelity: float):
         """Method to start the application.
@@ -65,7 +65,10 @@ class RequestApp(App):
         self.memo_size = memo_size
         self.fidelity = fidelity
 
-        self.node.reserve_net_resource(responder, start_t, end_t, memo_size, fidelity)
+        # Tag the reservation with this app's name so a node hosting several apps
+        # (e.g. DQCApp's telegate + teledata) can route callbacks to the right one.
+        self.node.reserve_net_resource(responder, start_t, end_t, memo_size, fidelity,
+                                       app_label=getattr(self, "name", ""))
 
     def get_reservation_result(self, reservation: Reservation, result: bool) -> None:
         """Method to receive reservation result from network manager. 
@@ -143,11 +146,6 @@ class RequestApp(App):
                 self.node.resource_manager.update(None, info.memory, "RAW")
 
     def get_throughput(self) -> float:
-        warnings.warn(
-            "get_throughput is deprecated and will be removed in a future release, use THROUGHPUT_METRIC from the metrics module instead",
-            category=FutureWarning,
-            stacklevel=2,
-        )
         return self.memory_counter / (self.end_t - self.start_t) * 1e12
 
 
@@ -172,3 +170,8 @@ class RequestApp(App):
                 event = Event(reservation.end_time, process)
                 self.node.timeline.schedule(event)
 
+    def set_name(self, name: str):
+        self.name = name
+
+    def __str__(self) -> str:
+        return self.name

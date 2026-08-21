@@ -22,7 +22,7 @@ if TYPE_CHECKING:
     from ..components.photon import Photon
     from ..app.app import App
     from ..app.request_app import RequestApp
-    from ..app.teleport_app import TeleportApp
+    from ..app.teleportation.teleport_app import TeleportApp
 
 from ..kernel.entity import Entity, ClassicalEntity
 from ..components.memory import MemoryArray
@@ -452,7 +452,8 @@ class QuantumRouter(Node):
         self.app = app
 
     def reserve_net_resource(self, responder: str, start_time: int, end_time: int, memory_size: int,
-                             target_fidelity: float, entanglement_number: int = 1, identity: int = 0) -> None:
+                             target_fidelity: float, entanglement_number: int = 1, identity: int = 0,
+                             app_label: str = "") -> None:
         """Method to request a reservation.
 
         Can be used by local applications.
@@ -465,8 +466,11 @@ class QuantumRouter(Node):
             target_fidelity (float): desired fidelity of entanglement.
             entanglement_number (int): the number of entanglement that the request ask for (default 1).
             identity (int): the ID of the request (default 0).
+            app_label (str): app-layer tag stored on the reservation for callback routing
+                (lets a node hosting several apps, e.g. telegate + teledata, route callbacks).
         """
-        self.network_manager.request(responder, start_time, end_time, memory_size, target_fidelity, entanglement_number, identity)
+        self.network_manager.request(responder, start_time, end_time, memory_size, target_fidelity,
+                                     entanglement_number, identity, app_label=app_label)
 
     def get_idle_memory(self, info: "MemoryInfo") -> None:
         """Method for application to receive available memories.
@@ -849,30 +853,68 @@ class DQCNode(QuantumRouter):
         timeline (Timeline): The timeline for scheduling operations.
         seed (int): the seed of the this node's random number generator.
         component_templates (dict): templates for the components of this node.
-        gate_fid (float): fidelity of gate operations (default is 1).
-        meas_fid (float): fidelity of measurement operations (default is 1).
         memo_arr_name (str): name of the communication memory array.
         resource_manager (ResourceManager): resource management module.
         network_manager (NetworkManager): network management module.
         map_to_middle_node (dict[str, str]): mapping of router names to intermediate bsm node names.
         app (any): application in use on node.
 
+        f_1q (float): 1-qubit gate fidelity for trajectory noise (default 1 = ideal).
+        f_2q (float): 2-qubit gate fidelity for trajectory noise (default 1 = ideal).
+        f_m (float): measurement/readout fidelity for trajectory noise (default 1 = ideal).
+        t1 (float | None): amplitude-damping (relaxation) time in seconds (None = off).
+        t2 (float | None): dephasing time in seconds (None = off).
+
         data_memo_arr_name (str): name of the data memory array.
         teleport_app (TeleportApp): The teleportation application instance.
         teledata_app (TeledataApp): The teledata application instance.
         telegate_app (TelegateApp): The telegate application instance.
+
+    Note:
+        ``f_1q``/``f_2q``/``f_m``/``t1``/``t2`` describe THIS node's local, computational
+        hardware imperfections, consumed by the ket-vector trajectory noise layer
+        (per-qubit, resolved by which node owns the qubit). DQC does not use the analytic
+        Bell-diagonal swapping/purification models, so the base ``gate_fid``/``meas_fid``
+        knobs are not exposed here. Physical Bell-pair fidelity is a property of the
+        entangled LINK, so it lives in the topology config (memory template), not the node.
     """
-    def __init__(self, name: str, timeline: "Timeline", memo_size: int = 1, seed: int = None, component_templates: dict = {}, 
-                 gate_fid: float = 1, meas_fid: float = 1, data_memo_size: int = 1):
-        super().__init__(name, timeline, memo_size, seed, component_templates, gate_fid, meas_fid)
+    def __init__(self, name: str, timeline: "Timeline", memo_size: int = 1, seed: int = None, component_templates: dict = {},
+                 data_memo_size: int = 1, f_1q: float = 1.0, f_2q: float = 1.0,
+                 f_m: float = 1.0, t1: float = None, t2: float = None):
+        super().__init__(name, timeline, memo_size, seed, component_templates)
+        # per-node local (computational) noise parameters read by the trajectory noise layer
+        self.f_1q = f_1q
+        self.f_2q = f_2q
+        self.f_m = f_m
+        self.t1 = t1
+        self.t2 = t2
         # your data qubits
         self.data_memo_arr_name = f"{name}.DataMemoryArray"
         data_memo_arr_args = component_templates.get("DataMemoryArray", {})
         data_memory_array = MemoryArray(self.data_memo_arr_name, timeline, data_memo_size, **data_memo_arr_args)
         self.add_component(data_memory_array)
+        self._register_qubit_noise(timeline)
         self.teleport_app: TeleportApp = None
         self.teledata_app = None
         self.telegate_app = None
+
+    def _is_noisy(self) -> bool:
+        """True if this node carries any non-ideal local (computational) noise param."""
+        return (self.f_1q < 1.0 or self.f_2q < 1.0 or self.f_m < 1.0
+                or self.t1 is not None or self.t2 is not None)
+
+    def _register_qubit_noise(self, timeline: "Timeline") -> None:
+        """Register every data + comm qubit (by qstate_key) with this node's local noise
+        on the quantum manager, so the ket-vector trajectory layer resolves each qubit's
+        fidelities/coherence by its owning node. No-op when the node is ideal (keeps the
+        default path zero-overhead) or the manager has no per-key noise API."""
+        qm = timeline.quantum_manager
+        if not self._is_noisy() or not hasattr(qm, "set_key_noise"):
+            return
+        for arr_name in (self.memo_arr_name, self.data_memo_arr_name):
+            for mem in self.get_component_by_name(arr_name):
+                qm.set_key_noise(mem.qstate_key, self.f_1q, self.f_2q, self.f_m,
+                                 self.t1, self.t2)
 
     def receive_message(self, src: str, msg: "Message") -> None:
         """Determine what to do when a message is received, based on the msg.receiver.

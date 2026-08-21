@@ -61,6 +61,10 @@ class QuantumManagerDensity(QuantumManager):
         self.one_qubit_gate_fid: float = self._validate(kwargs.get("one_qubit_gate_fid", 1.0))
         self.two_qubit_gate_fid: float = self._validate(kwargs.get("two_qubit_gate_fid", 1.0))
         self.measurement_fid: float = self._validate(kwargs.get("measurement_fid", 1.0))
+        # per-key overrides (populated by DQCNode registration): key -> (f_1q, f_2q, f_m).
+        # Lets a qubit carry its OWNING NODE's fidelities, so per-node noise works under
+        # the density formalism too (same set_key_noise API as the ket manager).
+        self.key_noise: dict[int, tuple] = {}
         # accounting
         self.gate_1q_count = 0
         self.gate_2q_count = 0
@@ -85,14 +89,31 @@ class QuantumManagerDensity(QuantumManager):
         return value
 
     def _noise_enabled(self) -> bool:
-        """True if any configured fidelity is below 1 (i.e. noise should be applied).
+        """True if any global fidelity is < 1 or any per-key noise is registered.
 
         Returns:
-            bool: True if any gate or measurement fidelity is < 1, else False.
+            bool: True if any gate/measurement fidelity is < 1 (global) or per-key.
         """
         return (self.one_qubit_gate_fid < 1.0
                 or self.two_qubit_gate_fid < 1.0
-                or self.measurement_fid < 1.0)
+                or self.measurement_fid < 1.0
+                or bool(self.key_noise))
+
+    def set_key_noise(self, key: int, f_1q: float = 1.0, f_2q: float = 1.0,
+                      f_m: float = 1.0, t1: float = None, t2: float = None) -> None:
+        """Register per-qubit fidelities for ``key`` (overrides the global knobs).
+
+        ``f_1q``/``f_2q`` map to 1-/2-qubit gate fidelity and ``f_m`` to measurement
+        fidelity. ``t1``/``t2`` are accepted for API parity with the ket manager, but
+        idle T1/T2 decoherence is not modeled in the density formalism (no-op here).
+        """
+        self.key_noise[key] = (self._validate(f_1q), self._validate(f_2q), self._validate(f_m))
+
+    def _key_fids(self, key: int) -> tuple:
+        """(1q_fid, 2q_fid, meas_fid) for ``key`` -- its registered params, else global."""
+        p = self.key_noise.get(key)
+        return p if p is not None else (self.one_qubit_gate_fid, self.two_qubit_gate_fid,
+                                        self.measurement_fid)
 
     def new(self, state: OneDimensionInput | TwoDimensionInput = ((complex(1), complex(0)), (complex(0), complex(0)))) -> int:
         """Method to create a new density matrix state.
@@ -211,12 +232,21 @@ class QuantumManagerDensity(QuantumManager):
         for gate in circuit.gates:
             name, indices = gate[0], gate[1]
             arg = gate[2] if len(gate) > 2 else None
-            mapped = [pos[keys[j]] for j in indices]        # gate qubits -> all_keys positions
+            gate_keys = [keys[j] for j in indices]          # gate qubits -> their keys
+            mapped = [pos[k] for k in gate_keys]            # gate qubits -> all_keys positions
             g = Circuit(n)
             g.gates.append([name, mapped, arg])
             gmat = g.get_unitary_matrix()
             rho = gmat @ rho @ gmat.conj().T
-            rho = self._apply_gate_noise(rho, n, mapped)
+            # fidelity from the owning node: 1q uses its key's f_1q; 2q uses the noisier
+            # of the two keys' f_2q (they are normally co-located, so this is exact).
+            if len(gate_keys) == 1:
+                fid = self._key_fids(gate_keys[0])[0]
+            elif len(gate_keys) == 2:
+                fid = min(self._key_fids(gate_keys[0])[1], self._key_fids(gate_keys[1])[1])
+            else:
+                fid = None
+            rho = self._apply_gate_noise(rho, n, mapped, fid)
 
         if len(circuit.measured_qubits) == 0:
             new_state_obj = DensityState(rho, all_keys)
@@ -227,11 +257,13 @@ class QuantumManagerDensity(QuantumManager):
         measured_keys = [keys[i] for i in circuit.measured_qubits]
         results = self._measure(rho, measured_keys, all_keys, meas_samp)
 
-        # Measurement reporting error: flip each reported bit with prob (1 - fid).
-        if self.measurement_fid < 1.0:
-            for mk in list(results):
+        # Measurement reporting error: flip each reported bit with prob (1 - fid) of
+        # its OWNING node (per-key f_m, falling back to the global measurement_fid).
+        for mk in list(results):
+            fm = self._key_fids(mk)[2]
+            if fm < 1.0:
                 self.measurement_count += 1
-                if self.noise_rng.random() > self.measurement_fid:
+                if self.noise_rng.random() > fm:
                     results[mk] ^= 1
                     self.measurement_error_count += 1
         return results
@@ -302,7 +334,8 @@ class QuantumManagerDensity(QuantumManager):
             full = np.kron(full, op)
         return full
 
-    def _apply_gate_noise(self, rho: np.ndarray, n: int, positions: list[int]) -> np.ndarray:
+    def _apply_gate_noise(self, rho: np.ndarray, n: int, positions: list[int],
+                          fid: float = None) -> np.ndarray:
         """Apply the noise channel for a gate acting on `positions` (1 or 2 qubits).
 
         rho -> (1-p) rho + (p/|S|) * sum_{P in S} P rho P^dagger, where S is the set of
@@ -313,6 +346,8 @@ class QuantumManagerDensity(QuantumManager):
             rho (np.ndarray): joint density matrix to apply the channel to.
             n (int): total number of qubits in `rho`.
             positions (list[int]): qubit indices the gate (and thus its noise) acts on.
+            fid (float | None): gate fidelity to use (the owning node's, for per-key
+                noise); falls back to the global 1q/2q fidelity when None.
 
         Returns:
             np.ndarray: the density matrix after the noise channel. Returns `rho`
@@ -322,10 +357,12 @@ class QuantumManagerDensity(QuantumManager):
         k = len(positions)
         if k == 1:
             self.gate_1q_count += 1
-            p = min(1.0, 1.5 * (1.0 - self.one_qubit_gate_fid))
+            f = self.one_qubit_gate_fid if fid is None else fid
+            p = min(1.0, 1.5 * (1.0 - f))
         elif k == 2:
             self.gate_2q_count += 1
-            p = min(1.0, 1.25 * (1.0 - self.two_qubit_gate_fid))
+            f = self.two_qubit_gate_fid if fid is None else fid
+            p = min(1.0, 1.25 * (1.0 - f))
         else:
             return rho  # noise only modeled for 1- and 2-qubit gates
         if p <= 0.0:

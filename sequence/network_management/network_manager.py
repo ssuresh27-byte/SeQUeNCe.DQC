@@ -111,7 +111,7 @@ class NetworkManager(ABC):
         pass
 
     @abstractmethod
-    def request(self, responder, start_time, end_time, memory_size, target_fidelity, entanglement_number=1, identity=0):
+    def request(self, responder, start_time, end_time, memory_size, target_fidelity, entanglement_number=1, identity=0, app_label=""):
         """Handle Requests from the Application."""
         pass
 
@@ -283,10 +283,10 @@ class DistributedNetworkManager(NetworkManager):
         log.logger.info(f'{self.owner.name} network manager received message from {src}: {msg}')
         self.forward.pop(src=src, msg=msg.payload)
 
-    def request(self, responder, start_time, end_time, memory_size, target_fidelity, entanglement_number=1, identity=0):
+    def request(self, responder, start_time, end_time, memory_size, target_fidelity, entanglement_number=1, identity=0, app_label=""):
         """Handle Requests from the Application by pushing the request into the stack.
            The RSVP protocol at the top of the stack will handle it.
-        
+
         Args:
             responder (str): name of node with which entanglement is requested.
             start_time (int): reservation start time in picoseconds.
@@ -295,5 +295,6 @@ class DistributedNetworkManager(NetworkManager):
             target_fidelity (float): desired fidelity of entanglement.
             entanglement_number (int): the number of entanglement pairs the request ask for.
             identity (int): the ID of a request
+            app_label (str): app-layer tag stored on the reservation for callback routing.
         """
-        self.rsvp.push(responder, start_time, end_time, memory_size, target_fidelity, entanglement_number, identity)
+        self.rsvp.push(responder, start_time, end_time, memory_size, target_fidelity, entanglement_number, identity, app_label=app_label)

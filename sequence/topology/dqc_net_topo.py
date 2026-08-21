@@ -75,7 +75,11 @@ class DQCNetTopo(Topo):
             elif node_type == self.DQC_NODE:
                 data_size = node.get(self.DATA_MEMO_ARRAY_SIZE, 0)
                 comm_size = node.get(self.MEMO_ARRAY_SIZE, 0)
-                node_obj = DQCNode(name, self.tl, memo_size=comm_size, data_memo_size=data_size, component_templates=template)
+                # per-node local (computational) noise parameters, if the config declares them
+                node_obj = DQCNode(name, self.tl, memo_size=comm_size, data_memo_size=data_size,
+                                   component_templates=template,
+                                   f_1q=node.get("f_1q", 1.0), f_2q=node.get("f_2q", 1.0),
+                                   f_m=node.get("f_m", 1.0), t1=node.get("t1"), t2=node.get("t2"))
             else:
                 raise ValueError(f"Unknown type of node '{node_type}'")
 
