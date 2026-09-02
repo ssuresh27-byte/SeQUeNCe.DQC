@@ -106,8 +106,8 @@ def caveman(
         stop_time=stop_time,
         formalism=formalism,
         node_template=template,
-        meas_fid=measurement_fidelity,
-        gate_fid=gate_fidelity,
+        measurement_fid=measurement_fidelity,
+        two_qubit_gate_fid=gate_fidelity,
     )
 
 
@@ -138,8 +138,8 @@ def grid(
         stop_time=stop_time,
         formalism=formalism,
         node_template=template,
-        meas_fid=measurement_fidelity,
-        gate_fid=gate_fidelity,
+        measurement_fid=measurement_fidelity,
+        two_qubit_gate_fid=gate_fidelity,
     )
 
 
@@ -171,8 +171,8 @@ def star(
         stop_time=stop_time,
         formalism=formalism,
         node_template=template,
-        meas_fid=measurement_fidelity,
-        gate_fid=gate_fidelity,
+        measurement_fid=measurement_fidelity,
+        two_qubit_gate_fid=gate_fidelity,
     )
 
 
@@ -202,8 +202,8 @@ def linear(
         stop_time=stop_time,
         formalism=formalism,
         node_template=template,
-        meas_fid=measurement_fidelity,
-        gate_fid=gate_fidelity,
+        measurement_fid=measurement_fidelity,
+        two_qubit_gate_fid=gate_fidelity,
     )
 
 
@@ -234,8 +234,8 @@ def mesh(
         stop_time=stop_time,
         formalism=formalism,
         node_template=template,
-        meas_fid=measurement_fidelity,
-        gate_fid=gate_fidelity,
+        measurement_fid=measurement_fidelity,
+        two_qubit_gate_fid=gate_fidelity,
     )
 
 
@@ -265,8 +265,8 @@ def ring(
         stop_time=stop_time,
         formalism=formalism,
         node_template=template,
-        meas_fid=measurement_fidelity,
-        gate_fid=gate_fidelity,
+        measurement_fid=measurement_fidelity,
+        two_qubit_gate_fid=gate_fidelity,
     )
 
 
@@ -296,8 +296,8 @@ def waxman(
         stop_time=stop_time,
         formalism=formalism,
         node_template=template,
-        meas_fid=measurement_fidelity,
-        gate_fid=gate_fidelity,
+        measurement_fid=measurement_fidelity,
+        two_qubit_gate_fid=gate_fidelity,
     )
 
 
@@ -330,8 +330,8 @@ def tree(
         stop_time=stop_time,
         formalism=formalism,
         node_template=template,
-        meas_fid=measurement_fidelity,
-        gate_fid=gate_fidelity,
+        measurement_fid=measurement_fidelity,
+        two_qubit_gate_fid=gate_fidelity,
     )
 
 
@@ -362,8 +362,8 @@ def autonomous_system(
         stop_time=stop_time,
         formalism=formalism,
         node_template=template,
-        meas_fid=measurement_fidelity,
-        gate_fid=gate_fidelity,
+        measurement_fid=measurement_fidelity,
+        two_qubit_gate_fid=gate_fidelity,
     )
 
 
@@ -394,8 +394,8 @@ def bcube(
         stop_time=stop_time,
         formalism=formalism,
         node_template=template,
-        meas_fid=measurement_fidelity,
-        gate_fid=gate_fidelity,
+        measurement_fid=measurement_fidelity,
+        two_qubit_gate_fid=gate_fidelity,
     )
 
 
@@ -426,8 +426,8 @@ def k_n(
         stop_time=stop_time,
         formalism=formalism,
         node_template=template,
-        meas_fid=measurement_fidelity,
-        gate_fid=gate_fidelity,
+        measurement_fid=measurement_fidelity,
+        two_qubit_gate_fid=gate_fidelity,
     )
 
 
@@ -455,8 +455,8 @@ def custom(
         stop_time=stop_time,
         formalism=formalism,
         node_template=template,
-        meas_fid=measurement_fidelity,
-        gate_fid=gate_fidelity,
+        measurement_fid=measurement_fidelity,
+        two_qubit_gate_fid=gate_fidelity,
     )
 
 

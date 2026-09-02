@@ -151,3 +151,7 @@ utils/json_config_generators/*.json
 
 # docstring files
 *.rst
+CLAUDE.md
+PERFORMANCE_NOTES.md
+.gitignore
+sequence/dqc/tests/NOTES_identity_dedup_regression.md

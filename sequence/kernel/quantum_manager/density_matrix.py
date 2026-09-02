@@ -9,7 +9,6 @@ from ..quantum_utils import (identity, kron, measure_entangled_state_with_cache_
                              measure_multiple_with_cache_density, measure_state_with_cache_density)
 from ...constants import DENSITY_MATRIX_FORMALISM
 
-import itertools
 import numpy as np
 from numpy import array
 from typing import TYPE_CHECKING
@@ -18,102 +17,14 @@ from ...components.circuit import Circuit
 
 @QuantumManager.register(DENSITY_MATRIX_FORMALISM)
 class QuantumManagerDensity(QuantumManager):
-    """Class to track and manage states with the density matrix formalism."""
+    """Class to track and manage states with the density matrix formalism.
 
-    # Single-qubit Pauli matrices used to build noise-channel Kraus operators.
-    _PAULI = {"I": np.eye(2, dtype=complex),
-              "X": np.array([[0, 1], [1, 0]], dtype=complex),
-              "Y": np.array([[0, -1j], [1j, 0]], dtype=complex),
-              "Z": np.array([[1, 0], [0, -1]], dtype=complex)}
+    Ideal (noiseless). Optional DQC per-node noise is added by SUBCLASSING this manager --
+    see :class:`sequence.dqc.noise.DensityMatrixNoise` -- which keeps this base untouched.
+    """
 
-    # Which non-identity Pauli alphabet each noise_type samples over.
-    _NOISE_ALPHABET = {"depolarize": "IXYZ", "dephase": "IZ", "bit_flip": "IX"}
-
-    def __init__(self, seed: int | None = None, **kwargs):
-        """Initialize a density-matrix manager, optionally with a per-gate noise model.
-
-        With default arguments the manager is noiseless and behaves exactly as before.
-        Noise is applied as deterministic CPTP (Kraus) channels on the density matrix
-        after each gate -- unlike the stabilizer manager, which samples Pauli branches.
-
-        Args:
-            seed (int | None): seed for the measurement-error RNG (reproducibility).
-            **kwargs: noise configuration:
-                - noise_type (str): channel applied after each gate, one of
-                  "depolarize" (all non-identity Paulis), "dephase" (Z only, T2-like),
-                  or "bit_flip" (X only). Default "depolarize".
-                - one_qubit_gate_fid (float): avg fidelity of 1-qubit gates. Default 1.0.
-                - two_qubit_gate_fid (float): avg fidelity of 2-qubit gates. Default 1.0.
-                - measurement_fid (float): probability a reported measurement bit is
-                  correct (1 - readout bit-flip probability). Default 1.0.
-
-        The infidelity -> channel-strength conversion matches the stabilizer manager:
-        for an average gate fidelity F on a d-dimensional system the total error
-        probability is (d+1)/d * (1 - F): 1.5*(1-F) for 1-qubit gates (d=2) and
-        1.25*(1-F) for 2-qubit gates (d=4), capped at 1.
-        """
+    def __init__(self):
         super().__init__()
-        self.noise_rng = np.random.default_rng(seed)
-        self.noise_type: str = kwargs.get("noise_type", "depolarize")
-        if self.noise_type not in self._NOISE_ALPHABET:
-            raise ValueError(f"Unknown noise_type '{self.noise_type}'. "
-                             f"Use one of {sorted(self._NOISE_ALPHABET)}.")
-        self.one_qubit_gate_fid: float = self._validate(kwargs.get("one_qubit_gate_fid", 1.0))
-        self.two_qubit_gate_fid: float = self._validate(kwargs.get("two_qubit_gate_fid", 1.0))
-        self.measurement_fid: float = self._validate(kwargs.get("measurement_fid", 1.0))
-        # per-key overrides (populated by DQCNode registration): key -> (f_1q, f_2q, f_m).
-        # Lets a qubit carry its OWNING NODE's fidelities, so per-node noise works under
-        # the density formalism too (same set_key_noise API as the ket manager).
-        self.key_noise: dict[int, tuple] = {}
-        # accounting
-        self.gate_1q_count = 0
-        self.gate_2q_count = 0
-        self.measurement_count = 0
-        self.measurement_error_count = 0
-
-    @staticmethod
-    def _validate(value: float) -> float:
-        """Return a fidelity/probability after checking it lies in [0, 1].
-
-        Args:
-            value (float): fidelity/probability to validate.
-
-        Returns:
-            float: the validated value (unchanged).
-
-        Raises:
-            ValueError: if value is outside [0, 1].
-        """
-        if not 0.0 <= value <= 1.0:
-            raise ValueError("Fidelity must be between 0 and 1, inclusive.")
-        return value
-
-    def _noise_enabled(self) -> bool:
-        """True if any global fidelity is < 1 or any per-key noise is registered.
-
-        Returns:
-            bool: True if any gate/measurement fidelity is < 1 (global) or per-key.
-        """
-        return (self.one_qubit_gate_fid < 1.0
-                or self.two_qubit_gate_fid < 1.0
-                or self.measurement_fid < 1.0
-                or bool(self.key_noise))
-
-    def set_key_noise(self, key: int, f_1q: float = 1.0, f_2q: float = 1.0,
-                      f_m: float = 1.0, t1: float = None, t2: float = None) -> None:
-        """Register per-qubit fidelities for ``key`` (overrides the global knobs).
-
-        ``f_1q``/``f_2q`` map to 1-/2-qubit gate fidelity and ``f_m`` to measurement
-        fidelity. ``t1``/``t2`` are accepted for API parity with the ket manager, but
-        idle T1/T2 decoherence is not modeled in the density formalism (no-op here).
-        """
-        self.key_noise[key] = (self._validate(f_1q), self._validate(f_2q), self._validate(f_m))
-
-    def _key_fids(self, key: int) -> tuple:
-        """(1q_fid, 2q_fid, meas_fid) for ``key`` -- its registered params, else global."""
-        p = self.key_noise.get(key)
-        return p if p is not None else (self.one_qubit_gate_fid, self.two_qubit_gate_fid,
-                                        self.measurement_fid)
 
     def new(self, state: OneDimensionInput | TwoDimensionInput = ((complex(1), complex(0)), (complex(0), complex(0)))) -> int:
         """Method to create a new density matrix state.
@@ -142,11 +53,6 @@ class QuantumManagerDensity(QuantumManager):
             If non-measurement, dict: empty dictionary.
         """
         validate_circuit_run(circuit, keys, meas_samp)
-
-        # Noisy path: apply gates one at a time, inserting a noise channel after each
-        # (see _run_circuit_noisy). Only taken when a fidelity < 1 is configured.
-        if self._noise_enabled():
-            return self._run_circuit_noisy(circuit, keys, meas_samp)
 
         new_state, all_keys, circ_mat = self._prepare_circuit(circuit, keys)
 
@@ -203,71 +109,6 @@ class QuantumManagerDensity(QuantumManager):
 
         return new_state, all_keys, circ_mat
 
-    # ------------------------------------------------------------------ #
-    # Per-gate noise model (deterministic CPTP channels on the density    #
-    # matrix). Enabled by passing gate fidelities < 1 to the constructor. #
-    # ------------------------------------------------------------------ #
-    def _run_circuit_noisy(self, circuit: Circuit, keys: list[int], meas_samp) -> dict[int, int]:
-        """Run a circuit gate-by-gate, applying a noise channel after each gate.
-
-        Each gate's ideal unitary is applied to the joint density matrix, then a
-        `noise_type` channel of strength derived from the gate fidelity acts on that
-        gate's qubits. Measurement reporting errors flip the returned bit with
-        probability ``1 - measurement_fid``.
-
-        Args:
-            circuit (Circuit): quantum circuit to apply.
-            keys (list[int]): list of keys to apply circuit to.
-            meas_samp (float): random number between 0 and 1 used for measurement.
-
-        Returns:
-            If measurement, dict[int, int]: dictionary mapping qstate keys to measurement results.
-            If non-measurement, dict: empty dictionary.
-        """
-
-        rho, all_keys = self._merge_state(keys)
-        n = len(all_keys)
-        pos = {key: i for i, key in enumerate(all_keys)}
-
-        for gate in circuit.gates:
-            name, indices = gate[0], gate[1]
-            arg = gate[2] if len(gate) > 2 else None
-            gate_keys = [keys[j] for j in indices]          # gate qubits -> their keys
-            mapped = [pos[k] for k in gate_keys]            # gate qubits -> all_keys positions
-            g = Circuit(n)
-            g.gates.append([name, mapped, arg])
-            gmat = g.get_unitary_matrix()
-            rho = gmat @ rho @ gmat.conj().T
-            # fidelity from the owning node: 1q uses its key's f_1q; 2q uses the noisier
-            # of the two keys' f_2q (they are normally co-located, so this is exact).
-            if len(gate_keys) == 1:
-                fid = self._key_fids(gate_keys[0])[0]
-            elif len(gate_keys) == 2:
-                fid = min(self._key_fids(gate_keys[0])[1], self._key_fids(gate_keys[1])[1])
-            else:
-                fid = None
-            rho = self._apply_gate_noise(rho, n, mapped, fid)
-
-        if len(circuit.measured_qubits) == 0:
-            new_state_obj = DensityState(rho, all_keys)
-            for key in all_keys:
-                self.states[key] = new_state_obj
-            return {}
-
-        measured_keys = [keys[i] for i in circuit.measured_qubits]
-        results = self._measure(rho, measured_keys, all_keys, meas_samp)
-
-        # Measurement reporting error: flip each reported bit with prob (1 - fid) of
-        # its OWNING node (per-key f_m, falling back to the global measurement_fid).
-        for mk in list(results):
-            fm = self._key_fids(mk)[2]
-            if fm < 1.0:
-                self.measurement_count += 1
-                if self.noise_rng.random() > fm:
-                    results[mk] ^= 1
-                    self.measurement_error_count += 1
-        return results
-
     def _merge_state(self, keys: list[int]) -> tuple[np.ndarray, list[int]]:
         """Tensor the distinct density-matrix blocks touched by `keys` into one rho.
 
@@ -291,140 +132,6 @@ class QuantumManagerDensity(QuantumManager):
         for state in old_states:
             rho = np.kron(rho, state)
         return rho, all_keys
-
-    def _pauli_labels(self, k: int, noise_type: str | None = None) -> list[str]:
-        """Non-identity Pauli strings on k qubits for the given (or configured) noise_type.
-
-        Args:
-            k (int): number of qubits the Pauli strings act on.
-            noise_type (str | None): noise alphabet to draw from; if None, uses the
-                manager's configured noise_type.
-
-        Returns:
-            list[str]: all length-k Pauli strings (over the noise_type's alphabet),
-                excluding the all-identity string.
-
-        Raises:
-            ValueError: if noise_type is not a recognized alphabet.
-        """
-        nt = noise_type if noise_type is not None else self.noise_type
-        if nt not in self._NOISE_ALPHABET:
-            raise ValueError(f"Unknown noise_type '{nt}'. Use one of {sorted(self._NOISE_ALPHABET)}.")
-        alphabet = self._NOISE_ALPHABET[nt]
-        labels = ("".join(t) for t in itertools.product(alphabet, repeat=k))
-        return [s for s in labels if any(c != "I" for c in s)]
-
-    def _embed_pauli(self, label: str, positions: list[int], n: int) -> np.ndarray:
-        """Full 2^n operator with `label`'s Paulis on `positions`, identity elsewhere.
-
-        Args:
-            label (str): Pauli string (e.g. "XZ") whose characters are placed on
-                `positions`, in order.
-            positions (list[int]): qubit indices each Pauli character acts on.
-            n (int): total number of qubits in the joint state.
-
-        Returns:
-            np.ndarray: the 2^n x 2^n Pauli operator.
-        """
-        ops = [self._PAULI["I"]] * n
-        for pauli_char, q in zip(label, positions):
-            ops[q] = self._PAULI[pauli_char]
-        full = ops[0]
-        for op in ops[1:]:
-            full = np.kron(full, op)
-        return full
-
-    def _apply_gate_noise(self, rho: np.ndarray, n: int, positions: list[int],
-                          fid: float = None) -> np.ndarray:
-        """Apply the noise channel for a gate acting on `positions` (1 or 2 qubits).
-
-        rho -> (1-p) rho + (p/|S|) * sum_{P in S} P rho P^dagger, where S is the set of
-        non-identity Paulis selected by noise_type and p is the fidelity-derived error
-        probability: 1.5*(1-fid) for 1-qubit gates, 1.25*(1-fid) for 2-qubit gates.
-
-        Args:
-            rho (np.ndarray): joint density matrix to apply the channel to.
-            n (int): total number of qubits in `rho`.
-            positions (list[int]): qubit indices the gate (and thus its noise) acts on.
-            fid (float | None): gate fidelity to use (the owning node's, for per-key
-                noise); falls back to the global 1q/2q fidelity when None.
-
-        Returns:
-            np.ndarray: the density matrix after the noise channel. Returns `rho`
-                unchanged if the gate is not 1- or 2-qubit or the error probability
-                is <= 0.
-        """
-        k = len(positions)
-        if k == 1:
-            self.gate_1q_count += 1
-            f = self.one_qubit_gate_fid if fid is None else fid
-            p = min(1.0, 1.5 * (1.0 - f))
-        elif k == 2:
-            self.gate_2q_count += 1
-            f = self.two_qubit_gate_fid if fid is None else fid
-            p = min(1.0, 1.25 * (1.0 - f))
-        else:
-            return rho  # noise only modeled for 1- and 2-qubit gates
-        if p <= 0.0:
-            return rho
-        labels = self._pauli_labels(k)
-        if not labels:
-            return rho
-        out = (1.0 - p) * rho
-        weight = p / len(labels)
-        for label in labels:
-            P = self._embed_pauli(label, positions, n)
-            out = out + weight * (P @ rho @ P.conj().T)
-        return out
-
-    # ------------------------------------------------------------------ #
-    # Key-based noise API: inject a channel at specific qubits (not tied   #
-    # to a gate). This is the density-matrix noise primitive a caller can  #
-    # use to model, e.g., error after a teleported gate.                   #
-    # ------------------------------------------------------------------ #
-    def apply_noise(self, keys: list[int], noise_type: str, amount: float,
-                    is_infidelity: bool = True) -> None:
-        """Apply a noise channel to the qubits at `keys` within their joint state.
-
-        rho -> (1-p) rho + (p/|S|) * sum_{P in S} P rho P^dagger, where S is the set of
-        non-identity Paulis selected by `noise_type`. Separable target states are merged
-        into one joint density matrix first.
-
-        Args:
-            keys: 1 or 2 quantum-manager keys the channel acts on.
-            noise_type: "depolarize" (all non-identity Paulis), "dephase" (Z only),
-                or "bit_flip" (X only).
-            amount: channel strength. If is_infidelity (default), treated as an average
-                gate infidelity and converted to p = amount*(d+1)/d (d = 2**len(keys));
-                otherwise used directly as the channel probability p.
-            is_infidelity: whether `amount` is an average gate infidelity or a raw p.
-
-        Returns:
-            None.
-        """
-        if amount <= 0.0:
-            return
-        keys = list(keys)
-        k = len(keys)
-        if k not in (1, 2):
-            raise ValueError("apply_noise supports 1 or 2 keys.")
-        d = 2 ** k
-        p = min(1.0, amount * (d + 1) / d if is_infidelity else amount)
-        if p <= 0.0:
-            return
-        rho, all_keys = self._merge_state(keys)      # merge separable blocks if needed
-        self.set(all_keys, rho)
-        positions = [all_keys.index(key) for key in keys]
-        n = len(all_keys)
-        labels = self._pauli_labels(k, noise_type)
-        if not labels:
-            return
-        out = (1.0 - p) * rho
-        weight = p / len(labels)
-        for label in labels:
-            P = self._embed_pauli(label, positions, n)
-            out = out + weight * (P @ rho @ P.conj().T)
-        self.set(all_keys, out)
 
     def reduce_to(self, keep_keys: list[int]) -> None:
         """Partial-trace the joint state holding `keep_keys` down to just those keys.
@@ -477,29 +184,6 @@ class QuantumManagerDensity(QuantumManager):
         m = len(keep)
         kept_order = [key for key in keys if key in keep]
         return reduced.reshape(2 ** m, 2 ** m), kept_order
-
-    def reset_error_statistics(self) -> None:
-        """Clear the gate/measurement accounting counters.
-
-        Returns:
-            None.
-        """
-        self.gate_1q_count = 0
-        self.gate_2q_count = 0
-        self.measurement_count = 0
-        self.measurement_error_count = 0
-
-    def get_error_statistics(self) -> dict[str, int]:
-        """Return per-run gate and measurement-error counts.
-
-        Returns:
-            dict[str, int]: counts keyed by "gate_1q_count", "gate_2q_count",
-                "measurement_count", and "measurement_error_count".
-        """
-        return {"gate_1q_count": self.gate_1q_count,
-                "gate_2q_count": self.gate_2q_count,
-                "measurement_count": self.measurement_count,
-                "measurement_error_count": self.measurement_error_count}
 
     def set(self, keys: list[int], state: OneDimensionInput | TwoDimensionInput) -> None:
         """Method to set the quantum state at the given keys.

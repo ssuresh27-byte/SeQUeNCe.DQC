@@ -112,7 +112,7 @@ def generate_nodes(router_names: list, memo_size: int, template: str = '', gate_
 
 def generate_config(g: nx.Graph, cc_delay: float, memory_size: int=5, output_file: str='output.json',
                     output_directory: str='tmp', stop_time: float|None=None, formalism: str|None=None, node_template: dict|None=None,
-                    meas_fid: float=1, gate_fid: float=1) -> tuple[dict, dict]:
+                    measurement_fid: float=1, two_qubit_gate_fid: float=1) -> tuple[dict, dict]:
     """Create a sequence config file from an arbitrary graph assuming meet-in-the-middle (MIM) entanglement generation
     
     Args:
@@ -124,8 +124,8 @@ def generate_config(g: nx.Graph, cc_delay: float, memory_size: int=5, output_fil
         stop_time: Optional stop time for the simulation in seconds (default: None)
         formalism: Optional formalism for the simulation (default: None)
         node_template: Optional template for nodes (default: None)
-        meas_fid: Measurement fidelity (default: 1)
-        gate_fid: Gate fidelity (default: 1)
+        measurement_fid: Measurement fidelity (default: 1)
+        two_qubit_gate_fid: Gate fidelity (default: 1)
     
     Returns:
         A tuple containing two dictionaries: the first dictionary is the output configuration, 
@@ -142,7 +142,7 @@ def generate_config(g: nx.Graph, cc_delay: float, memory_size: int=5, output_fil
 
     router_names = [router_name_func(i) for i in range(len(g.nodes))]
     nodes: list[dict] = generate_nodes(router_names, memory_size, 'router_template',
-                                       measurement_fidelity=meas_fid, gate_fidelity=gate_fid)
+                                       measurement_fidelity=measurement_fid, gate_fidelity=two_qubit_gate_fid)
     graph_to_name = {graph_node: router_names[i] for i, graph_node in enumerate(g.nodes)}
 
     bsm_nodes = []

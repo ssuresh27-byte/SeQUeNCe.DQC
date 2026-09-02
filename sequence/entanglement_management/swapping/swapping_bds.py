@@ -151,17 +151,17 @@ class EntanglementSwappingA_BDS(EntanglementSwappingA):
 
         # assert 1. >= left_elem_1 >= 0.5 and 1. >= right_elem_1 >= 0.5, "Input states should have fidelity above 1/2."
         # gate and measurment fidelities on swapping node, assuming two single-qubit measurements have equal fidelity
-        gate_fid, meas_fid = self.owner.gate_fid, self.owner.meas_fid
+        two_qubit_gate_fid, measurement_fid = self.owner.two_qubit_gate_fid, self.owner.measurement_fid
         # calculate the BDS elements
         c_I = left_elem_1 * right_elem_1 + left_elem_2 * right_elem_2 + left_elem_3 * right_elem_3 + left_elem_4 * right_elem_4
         c_X = left_elem_1 * right_elem_2 + left_elem_2 * right_elem_1 + left_elem_3 * right_elem_4 + left_elem_4 * right_elem_3
         c_Y = left_elem_1 * right_elem_4 + left_elem_4 * right_elem_1 + left_elem_2 * right_elem_3 + left_elem_3 * right_elem_2
         c_Z = left_elem_1 * right_elem_3 + left_elem_3 * right_elem_1 + left_elem_2 * right_elem_4 + left_elem_4 * right_elem_2
 
-        new_elem_1 = gate_fid * (meas_fid**2 * c_I + meas_fid*(1-meas_fid)*(c_X+c_Z) + (1-meas_fid)**2*c_Y) + (1-gate_fid)/4
-        new_elem_2 = gate_fid * (meas_fid**2 * c_X + meas_fid*(1-meas_fid)*(c_I+c_Y) + (1-meas_fid)**2*c_Z) + (1-gate_fid)/4
-        new_elem_3 = gate_fid * (meas_fid**2 * c_Z + meas_fid*(1-meas_fid)*(c_I+c_Y) + (1-meas_fid)**2*c_X) + (1-gate_fid)/4
-        new_elem_4 = gate_fid * (meas_fid**2 * c_Y + meas_fid*(1-meas_fid)*(c_X+c_Z) + (1-meas_fid)**2*c_I) + (1-gate_fid)/4        
+        new_elem_1 = two_qubit_gate_fid * (measurement_fid**2 * c_I + measurement_fid*(1-measurement_fid)*(c_X+c_Z) + (1-measurement_fid)**2*c_Y) + (1-two_qubit_gate_fid)/4
+        new_elem_2 = two_qubit_gate_fid * (measurement_fid**2 * c_X + measurement_fid*(1-measurement_fid)*(c_I+c_Y) + (1-measurement_fid)**2*c_Z) + (1-two_qubit_gate_fid)/4
+        new_elem_3 = two_qubit_gate_fid * (measurement_fid**2 * c_Z + measurement_fid*(1-measurement_fid)*(c_I+c_Y) + (1-measurement_fid)**2*c_X) + (1-two_qubit_gate_fid)/4
+        new_elem_4 = two_qubit_gate_fid * (measurement_fid**2 * c_Y + measurement_fid*(1-measurement_fid)*(c_X+c_Z) + (1-measurement_fid)**2*c_I) + (1-two_qubit_gate_fid)/4        
 
         if self.is_twirled:
             bds_elems = [new_elem_1, (1-new_elem_1)/3, (1-new_elem_1)/3, (1-new_elem_1)/3]

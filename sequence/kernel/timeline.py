@@ -76,9 +76,6 @@ class Timeline:
         if manager_kwargs is None:
             manager_kwargs = {}
         self.quantum_manager: QuantumManager = QuantumManager.create(**manager_kwargs)
-        # give the manager a sim-time handle (used by the ket manager's idle T1/T2 noise);
-        # a plain attribute, harmless for managers that don't read it.
-        self.quantum_manager.timeline = self
         metrics.register_time_provider(self)
 
     def now(self) -> int:

@@ -44,7 +44,8 @@ class DQCArchitecture:
         edges: list of undirected physical links (node_name pairs).
         comm_memo: base communication-memory (EPR) slots per node (may be raised
             by the compiler's provisioning for concurrent multi-hop telegates).
-        node_noise: optional {node_name: {f_1q, f_2q, f_m, t1, t2}} of per-node LOCAL
+        node_noise: optional {node_name: {one_qubit_gate_fid, two_qubit_gate_fid,
+            measurement_fid, t1, t2}} of per-node LOCAL
             (computational) hardware imperfections. Emitted inline on each DQCNode
             entry of the sim config, so each node is instantiated with its own
             fidelities; the ket-vector trajectory noise layer then reads them per
@@ -53,7 +54,7 @@ class DQCArchitecture:
     """
 
     # per-node local-noise fields carried through to the DQCNode constructor
-    NOISE_KEYS = ("f_1q", "f_2q", "f_m", "t1", "t2")
+    NOISE_KEYS = ("one_qubit_gate_fid", "two_qubit_gate_fid", "measurement_fid", "t1", "t2")
 
     def __init__(self, name: str, capacities: Dict[str, int],
                  edges: List[Tuple[str, str]], comm_memo: int = 16,

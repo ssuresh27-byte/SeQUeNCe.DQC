@@ -96,153 +96,10 @@ def _apply(tensor: np.ndarray, axes: list[int], gate: np.ndarray) -> np.ndarray:
 
 @QuantumManager.register(KET_VECTOR_FORMALISM)
 class QuantumManagerKet(QuantumManager):
-    """Track and manage quantum states with the ket-vector formalism.
+    """Class to track and manage quantum states with the ket vector formalism."""
 
-    Optional MONTE-CARLO TRAJECTORY noise: a ket is a pure state, so noise is added
-    per shot as random Pauli events -- over many shots the ensemble of pure
-    trajectories reproduces the mixed-state statistics at O(2^n) instead of the
-    density matrix's O(4^n). When every fidelity is 1 and no per-key noise is
-    registered, ``run_circuit`` takes the original zero-overhead ideal path.
-
-    Noise is PER-QUBIT: a global fidelity (from constructor kwargs) applies to any
-    qubit, but a qubit may carry its own fidelities via :meth:`set_key_noise`
-    (a DQCNode registers its data/comm qubits with its local hardware params), so
-    different nodes can be noisier than others. Idle T1/T2 needs sim-time, so the
-    Timeline hands the manager a ``timeline`` reference; ``_noise_last`` tracks each
-    qubit's last-touched time.
-
-    Constructor noise kwargs (all default to ideal):
-        f_1q (float): 1-qubit gate fidelity -- after each 1q gate, w.p. (1-f_1q) a
-            random X/Y/Z on that qubit.
-        f_2q (float): 2-qubit gate fidelity -- after each 2q gate, w.p. (1-f_2q) a
-            random non-identity 2-qubit Pauli.
-        f_m (float): measurement/readout fidelity -- each reported bit flips w.p. (1-f_m).
-        t1 (float | None): amplitude-damping (relaxation) time in seconds (None = off).
-        t2 (float | None): dephasing time in seconds (None = off).
-    """
-
-    _PAULIS = ("x", "y", "z")
-
-    def __init__(self, seed: int = None, **kwargs):
+    def __init__(self):
         super().__init__()
-        self.noise_rng = np.random.default_rng(seed)
-        self.f_1q: float = self._validate(kwargs.get("f_1q", 1.0))
-        self.f_2q: float = self._validate(kwargs.get("f_2q", 1.0))
-        self.f_m: float = self._validate(kwargs.get("f_m", 1.0))
-        self.t1 = kwargs.get("t1", None)
-        self.t2 = kwargs.get("t2", None)
-        # per-key overrides (populated by DQCNode registration): key -> (f_1q, f_2q, f_m, t1, t2)
-        self.key_noise: dict[int, tuple] = {}
-        # sim-time handle + last-touched times for idle T1/T2 (timeline set by the Timeline)
-        self.timeline = None
-        self._noise_last: dict[int, int] = {}
-
-    # ── noise configuration + helpers ────────────────────────────────────────
-    @staticmethod
-    def _validate(value: float) -> float:
-        """Return a fidelity after checking it lies in [0, 1]; raise otherwise."""
-        if not 0.0 <= value <= 1.0:
-            raise ValueError("Fidelity must be between 0 and 1, inclusive.")
-        return value
-
-    def _noise_enabled(self) -> bool:
-        """True if any global knob is non-ideal or any per-key noise is registered."""
-        return (self.f_1q < 1.0 or self.f_2q < 1.0 or self.f_m < 1.0
-                or self.t1 is not None or self.t2 is not None or bool(self.key_noise))
-
-    def set_key_noise(self, key: int, f_1q: float = 1.0, f_2q: float = 1.0,
-                      f_m: float = 1.0, t1: float = None, t2: float = None) -> None:
-        """Register per-qubit noise for ``key`` (overrides the global knobs)."""
-        self.key_noise[key] = (self._validate(f_1q), self._validate(f_2q),
-                               self._validate(f_m), t1, t2)
-
-    def _key_params(self, key: int) -> tuple:
-        """(f_1q, f_2q, f_m, t1, t2) for ``key`` -- its registered params, else global."""
-        p = self.key_noise.get(key)
-        return p if p is not None else (self.f_1q, self.f_2q, self.f_m, self.t1, self.t2)
-
-    def _rand_pauli(self) -> str:
-        return self._PAULIS[int(self.noise_rng.integers(3))]
-
-    def _inject_pauli(self, key: int, p: str) -> None:
-        """Apply a single Pauli ``p`` on ``key`` through the ideal circuit path."""
-        from ...components.circuit import Circuit
-        c = Circuit(1); getattr(c, p)(0); self._run_ideal(c, [key])
-
-    @staticmethod
-    def _t_phi(t1, t2):
-        """Pure-dephasing time from T1, T2 (1/Tphi = 1/T2 - 1/2T1). None if T2 off."""
-        if t2 is None:
-            return None
-        if t1 is None:
-            return t2
-        inv = 1.0 / t2 - 1.0 / (2.0 * t1)
-        return (1.0 / inv) if inv > 0 else math.inf
-
-    def _apply_idle(self, keys: list[int]) -> None:
-        """Apply idle T1/T2 decoherence to each key over its idle time since last touch."""
-        tl = self.timeline
-        if tl is None:
-            return
-        now = tl.now()
-        for key in keys:
-            idle = now - self._noise_last.get(key, now)
-            if idle > 0:
-                _, _, _, t1, t2 = self._key_params(key)
-                if t1 is not None or t2 is not None:
-                    self._decohere(key, idle, t1, t2)
-        for key in keys:
-            self._noise_last[key] = now
-
-    def _decohere(self, key: int, idle_ps: float, t1, t2) -> None:
-        # T1 as a stochastic RELAXATION through the SANCTIONED measurement path (never a
-        # manual amplitude edit, which corrupts entanglement bookkeeping): w.p. gamma
-        # collapse-measure the qubit and, if excited, drop it to |0>. T2 is a stochastic Z.
-        from ...components.circuit import Circuit
-        idle_s = idle_ps * 1e-12
-        if idle_s <= 0:
-            return
-        if t1 is not None:
-            gamma = 1.0 - math.exp(-idle_s / t1)
-            if gamma > 0 and self.noise_rng.random() < gamma:
-                c = Circuit(1); c.measure(0)
-                res = self._run_ideal(c, [key], self.noise_rng.random())
-                if res.get(key) == 1:
-                    self._inject_pauli(key, "x")
-        t_phi = self._t_phi(t1, t2)
-        if t_phi is not None and t_phi != math.inf:
-            p_z = 0.5 * (1.0 - math.exp(-idle_s / t_phi))
-            if self.noise_rng.random() < p_z:
-                self._inject_pauli(key, "z")
-
-    def _apply_gate_noise(self, circuit: "Circuit", keys: list[int]) -> None:
-        """Depolarize after each gate, using the owning node's fidelity per qubit."""
-        for _name, indices, _arg in circuit.gates:
-            gk = [keys[i] for i in indices]
-            if len(gk) == 1:
-                f_1q = self._key_params(gk[0])[0]
-                if f_1q < 1.0 and self.noise_rng.random() > f_1q:
-                    self._inject_pauli(gk[0], self._rand_pauli())
-            elif len(gk) == 2:
-                # both keys are normally co-located (telegate does the CX locally); if they
-                # somehow differ, use the noisier node's 2q fidelity.
-                f_2q = min(self._key_params(gk[0])[1], self._key_params(gk[1])[1])
-                if f_2q < 1.0 and self.noise_rng.random() > f_2q:
-                    while True:
-                        a, b = int(self.noise_rng.integers(4)), int(self.noise_rng.integers(4))
-                        if a or b:
-                            break
-                    if a:
-                        self._inject_pauli(gk[0], self._PAULIS[a - 1])
-                    if b:
-                        self._inject_pauli(gk[1], self._PAULIS[b - 1])
-
-    def _apply_readout_noise(self, result: dict[int, int]) -> None:
-        """Flip each reported measurement bit w.p. (1 - f_m) of its owning qubit."""
-        for key in list(result.keys()):
-            f_m = self._key_params(key)[2]
-            if f_m < 1.0 and self.noise_rng.random() > f_m:
-                result[key] ^= 1
 
     def new(self, state: OneDimensionInput = (complex(1), complex(0))) -> int:
         """Method to create a new ket state.
@@ -259,32 +116,7 @@ class QuantumManagerKet(QuantumManager):
         return key
 
     def run_circuit(self, circuit: Circuit, keys: list[int], meas_samp: float = None) -> dict[int, int]:
-        """Apply a circuit to the qubits named by ``keys`` (with trajectory noise if enabled).
-
-        When no noise is configured this is exactly the ideal contraction path. When
-        noise is enabled it wraps that path with idle T1/T2 (before the op), post-gate
-        depolarizing, and readout flips -- each resolved by the qubit's owning node.
-
-        Args:
-            circuit (Circuit): quantum circuit to apply.
-            keys (list[int]): keys of the qubits, in circuit-qubit order.
-            meas_samp (float): random sample in [0, 1) for measurement (required if the
-                               circuit measures any qubit).
-
-        Returns:
-            dict[int, int]: mapping of each measured key to its outcome (empty if none).
-        """
-        if not self._noise_enabled():
-            return self._run_ideal(circuit, keys, meas_samp)
-        self._apply_idle(keys)                          # idle T1/T2 before the op
-        result = self._run_ideal(circuit, keys, meas_samp)
-        self._apply_gate_noise(circuit, keys)           # post-gate depolarizing
-        if result:
-            self._apply_readout_noise(result)           # readout flips
-        return result
-
-    def _run_ideal(self, circuit: Circuit, keys: list[int], meas_samp: float = None) -> dict[int, int]:
-        """Apply a circuit to the qubits named by `keys` (ideal, noiseless path).
+        """Apply a circuit to the qubits named by `keys`.
 
         Each gate is applied by tensor contraction. This costs O(2^(k+m)) = O(2^k) ,
         where k is the number of qubits in the combined state and m is the number of qubits the gate acts on (1 or 2).

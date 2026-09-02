@@ -52,11 +52,11 @@ class Node(Entity):
         generator (np.random.Generator): random number generator used by node.
         components (dict[str, Entity]): mapping of local component names to objects.
         first_component_name (str): name of component that first receives incoming qubits.
-        gate_fid (float): fidelity of multi-qubit gates (usually CNOT) that can be performed on the node.
-        meas_fid (float): fidelity of single-qubit measurements (usually Z measurement) that can be performed on the node.
+        two_qubit_gate_fid (float): fidelity of multi-qubit gates (usually CNOT) that can be performed on the node.
+        measurement_fid (float): fidelity of single-qubit measurements (usually Z measurement) that can be performed on the node.
     """
 
-    def __init__(self, name: str, timeline: "Timeline", seed=None, gate_fid: float = 1, meas_fid: float = 1):
+    def __init__(self, name: str, timeline: "Timeline", seed=None, two_qubit_gate_fid: float = 1, measurement_fid: float = 1):
         """Constructor for node.
 
         name (str): name of node instance.
@@ -76,9 +76,9 @@ class Node(Entity):
 
         # note that we are assuming homogeneous gates and measurements,
         # i.e. every gate on one specific node has identical fidelity, and so is measurement.
-        self.gate_fid = gate_fid
-        self.meas_fid = meas_fid
-        assert 0 <= gate_fid <= 1 and 0 <= meas_fid <= 1, "Gate fidelity and measurement fidelity must be between 0 and 1."
+        self.two_qubit_gate_fid = two_qubit_gate_fid
+        self.measurement_fid = measurement_fid
+        assert 0 <= two_qubit_gate_fid <= 1 and 0 <= measurement_fid <= 1, "Gate fidelity and measurement fidelity must be between 0 and 1."
 
     def init(self) -> None:
         pass
@@ -306,8 +306,8 @@ class QuantumRouter(Node):
         timeline (Timeline): timeline for simulation.
         seed (int): the seed for the random number generator.
         component_templates (dict): templates for the components of this node.
-        gate_fid (float): fidelity of multi-qubit gates (usually CNOT) that can be performed on the node.
-        meas_fid (float): fidelity of single-qubit measurements (usually Z measurement) that can be performed on the node.
+        two_qubit_gate_fid (float): fidelity of multi-qubit gates (usually CNOT) that can be performed on the node.
+        measurement_fid (float): fidelity of single-qubit measurements (usually Z measurement) that can be performed on the node.
         memo_arr_name (str): name of the communication memory array.
         resource_manager (ResourceManager): resource management module.
         network_manager (NetworkManager): network management module.
@@ -318,7 +318,7 @@ class QuantumRouter(Node):
         swapping_degradation (float | None): the degradation of entanglement swapping performed by this node (Default None).
     """
 
-    def __init__(self, name: str, tl: "Timeline", memo_size: int = 50, seed: int | None = None, component_templates: dict = {}, gate_fid: float = 1, meas_fid: float = 1):
+    def __init__(self, name: str, tl: "Timeline", memo_size: int = 50, seed: int | None = None, component_templates: dict = {}, two_qubit_gate_fid: float = 1, measurement_fid: float = 1):
         """Constructor for quantum router class.
 
         Args:
@@ -327,13 +327,13 @@ class QuantumRouter(Node):
             memo_size (int): number of memories to add in the array (default 50).
             seed (int): the random seed for the random number generator
             component_templates (dict): parameters for the quantum router
-            gate_fid (float): fidelity of multi-qubit gates (usually CNOT) that can be performed on the node;
+            two_qubit_gate_fid (float): fidelity of multi-qubit gates (usually CNOT) that can be performed on the node;
                               Default value is 1, meaning ideal gate.
-            meas_fid (float): fidelity of single-qubit measurements (usually Z measurement) that can be performed on the node;
+            measurement_fid (float): fidelity of single-qubit measurements (usually Z measurement) that can be performed on the node;
                               Default value is 1, meaning ideal measurement.
         """
 
-        super().__init__(name, tl, seed, gate_fid, meas_fid)
+        super().__init__(name, tl, seed, two_qubit_gate_fid, measurement_fid)
         self.memo_arr_name = f"{name}.MemoryArray" # create the memory array object with optional args
         memo_arr_args = component_templates.get("MemoryArray", {})
         memory_array = MemoryArray(self.memo_arr_name, tl, num_memories=memo_size, **memo_arr_args)
@@ -859,9 +859,10 @@ class DQCNode(QuantumRouter):
         map_to_middle_node (dict[str, str]): mapping of router names to intermediate bsm node names.
         app (any): application in use on node.
 
-        f_1q (float): 1-qubit gate fidelity for trajectory noise (default 1 = ideal).
-        f_2q (float): 2-qubit gate fidelity for trajectory noise (default 1 = ideal).
-        f_m (float): measurement/readout fidelity for trajectory noise (default 1 = ideal).
+        one_qubit_gate_fid (float): 1-qubit gate fidelity (default 1 = ideal) -- SAME name
+            as the density-matrix manager's knob, so node and manager share one vocabulary.
+        two_qubit_gate_fid (float): 2-qubit gate fidelity (default 1 = ideal).
+        measurement_fid (float): measurement/readout fidelity (default 1 = ideal).
         t1 (float | None): amplitude-damping (relaxation) time in seconds (None = off).
         t2 (float | None): dephasing time in seconds (None = off).
 
@@ -871,21 +872,21 @@ class DQCNode(QuantumRouter):
         telegate_app (TelegateApp): The telegate application instance.
 
     Note:
-        ``f_1q``/``f_2q``/``f_m``/``t1``/``t2`` describe THIS node's local, computational
-        hardware imperfections, consumed by the ket-vector trajectory noise layer
-        (per-qubit, resolved by which node owns the qubit). DQC does not use the analytic
-        Bell-diagonal swapping/purification models, so the base ``gate_fid``/``meas_fid``
-        knobs are not exposed here. Physical Bell-pair fidelity is a property of the
-        entangled LINK, so it lives in the topology config (memory template), not the node.
+        ``one_qubit_gate_fid``/``two_qubit_gate_fid``/``measurement_fid``/``t1``/``t2``
+        describe THIS node's local, computational hardware imperfections, consumed by the
+        trajectory-noise layer (per-qubit, resolved by which node owns the qubit). They use
+        the SAME names as the density-matrix manager's gate/measurement fidelities. Physical
+        Bell-pair fidelity is a property of the entangled LINK, so it lives in the topology
+        config (memory template), not the node.
     """
     def __init__(self, name: str, timeline: "Timeline", memo_size: int = 1, seed: int = None, component_templates: dict = {},
-                 data_memo_size: int = 1, f_1q: float = 1.0, f_2q: float = 1.0,
-                 f_m: float = 1.0, t1: float = None, t2: float = None):
+                 data_memo_size: int = 1, one_qubit_gate_fid: float = 1.0, two_qubit_gate_fid: float = 1.0,
+                 measurement_fid: float = 1.0, t1: float = None, t2: float = None):
         super().__init__(name, timeline, memo_size, seed, component_templates)
-        # per-node local (computational) noise parameters read by the trajectory noise layer
-        self.f_1q = f_1q
-        self.f_2q = f_2q
-        self.f_m = f_m
+        # per-node local (computational) noise parameters (same names as the density manager)
+        self.one_qubit_gate_fid = one_qubit_gate_fid
+        self.two_qubit_gate_fid = two_qubit_gate_fid
+        self.measurement_fid = measurement_fid
         self.t1 = t1
         self.t2 = t2
         # your data qubits
@@ -893,28 +894,29 @@ class DQCNode(QuantumRouter):
         data_memo_arr_args = component_templates.get("DataMemoryArray", {})
         data_memory_array = MemoryArray(self.data_memo_arr_name, timeline, data_memo_size, **data_memo_arr_args)
         self.add_component(data_memory_array)
-        self._register_qubit_noise(timeline)
         self.teleport_app: TeleportApp = None
         self.teledata_app = None
         self.telegate_app = None
 
-    def _is_noisy(self) -> bool:
-        """True if this node carries any non-ideal local (computational) noise param."""
-        return (self.f_1q < 1.0 or self.f_2q < 1.0 or self.f_m < 1.0
-                or self.t1 is not None or self.t2 is not None)
+    @property
+    def is_noisy(self) -> bool:
+        """True if this node carries any non-ideal local (computational) noise param. A
+        computed attribute (not a stored flag) so it stays correct after the runtime stamps
+        a uniform NoiseConfig's fidelities onto the node post-construction."""
+        return (self.one_qubit_gate_fid < 1.0 or self.two_qubit_gate_fid < 1.0
+                or self.measurement_fid < 1.0 or self.t1 is not None or self.t2 is not None)
 
-    def _register_qubit_noise(self, timeline: "Timeline") -> None:
-        """Register every data + comm qubit (by qstate_key) with this node's local noise
-        on the quantum manager, so the ket-vector trajectory layer resolves each qubit's
-        fidelities/coherence by its owning node. No-op when the node is ideal (keeps the
-        default path zero-overhead) or the manager has no per-key noise API."""
-        qm = timeline.quantum_manager
-        if not self._is_noisy() or not hasattr(qm, "set_key_noise"):
+    def register_qubits(self, qm) -> None:
+        """Route this node's data + comm qubits (by qstate_key) to THIS node on the quantum
+        manager (``qm.register_qubit``), so the trajectory-noise layer reads their
+        fidelities/coherence LIVE off the node. No-op if the node is ideal, or if the
+        manager has no per-qubit noise routing (e.g. a plain formalism). The node holds the
+        values; the manager only keeps the key->node routing."""
+        if not self.is_noisy or not hasattr(qm, "register_qubit"):
             return
         for arr_name in (self.memo_arr_name, self.data_memo_arr_name):
             for mem in self.get_component_by_name(arr_name):
-                qm.set_key_noise(mem.qstate_key, self.f_1q, self.f_2q, self.f_m,
-                                 self.t1, self.t2)
+                qm.register_qubit(mem.qstate_key, self)
 
     def receive_message(self, src: str, msg: "Message") -> None:
         """Determine what to do when a message is received, based on the msg.receiver.

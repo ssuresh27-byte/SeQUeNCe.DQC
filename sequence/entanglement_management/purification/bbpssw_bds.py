@@ -171,9 +171,9 @@ class BBPSSW_BDS(BBPSSWProtocol):
         own_node, remote_node = self.owner, self.owner.timeline.get_entity_by_name(self.remote_node_name)
 
         # gate and measurement fidelities on protocol owner node
-        own_node_gate_fid, own_node_meas_fid = own_node.gate_fid, own_node.meas_fid
+        own_node_gate_fid, own_node_meas_fid = own_node.two_qubit_gate_fid, own_node.measurement_fid
         # gate and measurement fidelities on remote node
-        remote_node_gate_fid, remote_node_meas_fid = remote_node.gate_fid, remote_node.meas_fid
+        remote_node_gate_fid, remote_node_meas_fid = remote_node.two_qubit_gate_fid, remote_node.measurement_fid
 
         if self.is_twirled:
             kept_elem_1, kept_elem_2, kept_elem_3, kept_elem_4 = kept_input_state.state[0], (1 - kept_input_state.state[

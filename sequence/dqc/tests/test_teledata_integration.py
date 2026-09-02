@@ -17,7 +17,7 @@ from sequence.topology.dqc_net_topo import DQCNetTopo
 from sequence.components.circuit import Circuit
 from sequence.kernel.quantum_utils import verify_same_state_vector
 
-import sequence.dqc.topology as topo
+import sequence.dqc.architecture as topo
 from sequence.dqc.dqc_app import DQCApp
 from sequence.dqc.controllers.central_node import CentralNodeController
 

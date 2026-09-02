@@ -6,7 +6,7 @@ noise carried inline on each node. Per-node noise is applied natively by the
 ket-vector quantum manager (trajectory noise); see
 :class:`sequence.kernel.quantum_manager.ket_vector.QuantumManagerKet`.
 """
-from .topology import (
+from .architecture import (
     DQCArchitecture,
     DQCTopology,   # back-compat alias of DQCArchitecture
     Topology,      # back-compat alias of DQCArchitecture
