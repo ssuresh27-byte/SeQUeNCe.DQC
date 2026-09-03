@@ -412,6 +412,57 @@ class DensityMatrixNoise(_NodeRouting, QuantumManagerDensity):
         out = self._pauli_channel(rho, len(all_keys), positions, noise_type, p)
         self.set(all_keys, out)
 
+    def reduce_to(self, keep_keys: list[int]) -> None:
+        """Partial-trace the joint state holding ``keep_keys`` down to just those keys.
+
+        Detaches ``keep_keys`` from any other qubits currently sharing their density
+        matrix (e.g. measured comm qubits left entangled after a teleported gate, which
+        would corrupt the data qubits when their memory slots are later reset) and
+        re-registers the reduced state. No-op if the state already contains only
+        ``keep_keys``.
+
+        Args:
+            keep_keys (list[int]): keys to retain; all other qubits sharing their joint
+                state are traced out.
+
+        Returns:
+            None.
+        """
+        keep_keys = list(keep_keys)
+        rho, all_keys = self._merge_state(keep_keys)
+        if len(all_keys) == len(keep_keys):
+            self.set(all_keys, rho)
+            return
+        reduced, kept_order = self._partial_trace(rho, all_keys, keep_keys)
+        self.set(kept_order, reduced)
+
+    @staticmethod
+    def _partial_trace(rho, keys: list[int], keep: list[int]):
+        """Partial-trace ``rho`` (ordered by ``keys``) down to ``keep``.
+
+        Args:
+            rho (np.ndarray): joint density matrix, ordered by ``keys``.
+            keys (list[int]): keys labeling rho's qubits, in order.
+            keep (list[int]): subset of ``keys`` to retain.
+
+        Returns:
+            tuple[np.ndarray, list[int]]: (reduced_rho, kept_key_order).
+        """
+        n = len(keys)
+        t = np.asarray(rho, dtype=complex).reshape([2] * n + [2] * n)
+        row = [chr(ord('a') + i) for i in range(n)]
+        col = [chr(ord('a') + n + i) for i in range(n)]
+        for i in range(n):
+            if keys[i] not in keep:
+                col[i] = row[i]                      # trace this qubit
+        out_row = [row[i] for i in range(n) if keys[i] in keep]
+        out_col = [col[i] for i in range(n) if keys[i] in keep]
+        subscript = ''.join(row) + ''.join(col) + '->' + ''.join(out_row) + ''.join(out_col)
+        reduced = np.einsum(subscript, t)
+        m = len(keep)
+        kept_order = [key for key in keys if key in keep]
+        return reduced.reshape(2 ** m, 2 ** m), kept_order
+
     def reset_error_statistics(self) -> None:
         self.gate_1q_count = self.gate_2q_count = 0
         self.measurement_count = self.measurement_error_count = 0

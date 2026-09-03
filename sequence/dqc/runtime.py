@@ -32,8 +32,19 @@ from sequence.dqc.compilers import build_compiler
 from sequence.dqc.controllers.central_node import CentralNodeController
 from sequence.dqc.controllers.adaptive_central_node import AdaptiveController
 from sequence.dqc.dqc_app import DQCApp
-from sequence.constants import KET_VECTOR_FORMALISM
-from sequence.dqc.noise import KET_VECTOR_NOISE_FORMALISM
+from sequence.constants import KET_VECTOR_FORMALISM, DENSITY_MATRIX_FORMALISM
+from sequence.dqc.noise import KET_VECTOR_NOISE_FORMALISM, DENSITY_MATRIX_NOISE_FORMALISM
+
+# (formalism, noise_active) -> the quantum-manager formalism id the Timeline is built with.
+# Noisy runs use the per-node noise manager (a subclass of the pristine one); noiseless
+# runs use the pristine manager. Set explicitly so a noisy run never leaks its formalism
+# into a later noiseless run in the same process.
+_FORMALISMS = {
+    ("ket", False): KET_VECTOR_FORMALISM,
+    ("ket", True): KET_VECTOR_NOISE_FORMALISM,
+    ("density", False): DENSITY_MATRIX_FORMALISM,
+    ("density", True): DENSITY_MATRIX_NOISE_FORMALISM,
+}
 
 CONTROLLERS = {"barrier": CentralNodeController, "adaptive": AdaptiveController}
 
@@ -85,7 +96,8 @@ def compile_program(circuit, topology, partitioner="topo-aware", scheduler="fgp"
 
 def run(circuit, topology, partitioner="topo-aware", scheduler="fgp", seed=0,
         controller="barrier", data_qubits=None, expected=None,
-        noise=None, shots=1, meas_seed=9479, compiler=None, dump_config=None) -> dict:
+        noise=None, shots=1, meas_seed=9479, compiler=None, dump_config=None,
+        formalism="ket") -> dict:
     """Compile + simulate ``circuit`` on ``topology`` and read out the data qubits.
 
     ``partitioner`` + ``scheduler`` select a built-in compiler (static pipeline, or the
@@ -102,10 +114,18 @@ def run(circuit, topology, partitioner="topo-aware", scheduler="fgp", seed=0,
     shots that measured ``expected``) and a ``measured_hist``. With no noise and
     ``shots=1`` it's the deterministic single run (``measured`` / ``ok``).
 
+    ``formalism``: state representation for the simulation -- "ket" (state-vector; noise
+    is per-shot random Paulis, cheap, needs many shots) or "density" (density matrix;
+    noise is deterministic CPTP channels, exact in one shot, costlier). When ``noise`` /
+    per-node noise is active, the matching noise manager is selected automatically
+    (KetVectorNoise / DensityMatrixNoise).
+
     ``dump_config``: optional path to write the EXACT expanded DQCNetTopo config that
     gets simulated (teleport-json layout, per-node noise inline on each DQCNode), so it
     can be inspected. Written once, before the first shot.
     """
+    if formalism not in ("ket", "density"):
+        raise ValueError(f"formalism must be 'ket' or 'density', got {formalism!r}.")
     n = circuit.size
     if data_qubits is None:
         data_qubits = range(n)
@@ -117,10 +137,8 @@ def run(circuit, topology, partitioner="topo-aware", scheduler="fgp", seed=0,
         # Generous memory so the controller can compile AFTER the net is built:
         # data memory holds every qubit slot (FGP slot==qubit-id); comm pool >> load.
         config = topology.sim_config()
-        # Noisy runs build the Timeline with the per-node noise manager (a subclass of the
-        # pristine ket manager); noiseless runs use the pristine manager. Set explicitly so a
-        # noisy run never leaks its formalism into a later noiseless run in the same process.
-        config["formalism"] = KET_VECTOR_NOISE_FORMALISM if noise_active else KET_VECTOR_FORMALISM
+        # Select the state formalism (ket / density) and its noise variant when noise is active.
+        config["formalism"] = _FORMALISMS[(formalism, noise_active)]
         for nd in config["nodes"]:
             if nd.get("type") == "DQCNode":
                 nd["data_memo_size"] = max(nd.get("data_memo_size", 0), n)
