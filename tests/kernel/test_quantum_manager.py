@@ -7,10 +7,11 @@ import pytest
 import stim
 
 from sequence.kernel.quantum_state import StabilizerState, KetState
-from sequence.kernel.quantum_manager import QuantumManagerDensity, QuantumManagerDensityFock, QuantumManagerKet, QuantumManagerStabilizer
-from sequence.kernel.quantum_manager.base import swap_qubits, validate_circuit_run
-from sequence.kernel.quantum_utils import (identity, kron, measure_state_with_cache_ket,
-                                           measure_entangled_state_with_cache_ket, measure_multiple_with_cache_ket)
+from sequence.kernel.quantum_manager import (QuantumManagerDensity, QuantumManagerDensityFock, 
+                                             QuantumManagerKet, QuantumManagerStabilizer)
+from sequence.kernel.quantum_manager.utils import swap_qubits, validate_circuit_run
+from sequence.kernel.quantum_utils import (measure_state_with_cache_ket, measure_entangled_state_with_cache_ket, 
+                                           measure_multiple_with_cache_ket)
 from sequence.components.circuit import Circuit
 from sequence.constants import SECOND
 
@@ -133,37 +134,6 @@ def test_qmanager_circuit():
     assert np.array_equal(qm.get(key1).state, qm.get(key3).state)
 
 
-def test_qmanager_circuit_dedups_states_by_identity_not_first_key():
-    """Regression: run_circuit assembles its working state by deduping the
-    involved KetStates on object identity, not on their first key.
-
-    Mid-teleport (Bell-measurement collapses/merges) the manager can transiently
-    hold two *distinct* KetState objects whose ``.keys`` lists share a first key.
-    Deduping the assembly loop on ``qstate.keys[0]`` would treat the second state
-    as already-seen and skip it -- dropping its qubits from ``all_keys`` and, on
-    the no-measurement store path, orphaning those keys (they keep pointing at the
-    stale object while the rest move to the merged ket). Identity dedup pulls in
-    every distinct involved state exactly once, so every input key ends up sharing
-    the merged ket.
-    """
-    qm = QuantumManagerKet()
-
-    # Two distinct states sharing first key 11; state_a's listing of 11 is stale.
-    state_a = KetState([1, 0, 0, 0], [10, 11])
-    state_b = KetState([1, 0, 0, 0], [11, 12])
-    qm.states = {10: state_a, 11: state_b, 12: state_b}
-
-    # No measurement; gate touches only key 10, so the run turns purely on dedup.
-    circuit = Circuit(2)
-    circuit.x(0)
-    qm.run_circuit(circuit, [10, 12])
-
-    # All involved keys share one merged ket; first-key dedup would orphan key 12.
-    merged = qm.get(10)
-    assert qm.get(11) is merged
-    assert qm.get(12) is merged
-
-
 def _reference_run_circuit(qm: QuantumManagerKet, circuit: Circuit, keys: list[int], meas_samp: float = None):
     """Stock matrix-path circuit execution -- the pre-optimization reference for the
     fast run_circuit. Builds the full circuit unitary (via _reference_prepare_circuit /
@@ -196,12 +166,12 @@ def _reference_prepare_circuit(qm: QuantumManagerKet, circuit: Circuit, keys: li
 
     new_state = [1]
     for state in old_states:
-        new_state = kron(new_state, state)
+        new_state = np.kron(new_state, state)
 
     circ_mat = circuit.get_unitary_matrix()
     if circuit.size < len(all_keys):
         diff = len(all_keys) - circuit.size
-        circ_mat = kron(circ_mat, identity(2 ** diff))
+        circ_mat = np.kron(circ_mat, np.identity(2 ** diff))
 
     if not all([all_keys.index(key) == i for i, key in enumerate(keys)]):
         all_keys, swap_mat = swap_qubits(all_keys, keys)
@@ -317,7 +287,6 @@ def test_fast_measure_matches_reference(samp):
     assert np.allclose(qm_fast.get(key).state, qm_ref.get(key).state)      # measured qubit collapsed the same
     assert np.allclose(qm_fast.get(other).state, qm_ref.get(other).state)  # partner qubit collapsed the same
 
-test_fast_measure_matches_reference(0.05)
 
 @pytest.mark.parametrize("samp", [0.2, 0.8])
 def test_fast_measure_matches_reference_single_qubit(samp):

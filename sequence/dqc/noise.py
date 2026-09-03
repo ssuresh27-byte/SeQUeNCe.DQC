@@ -220,8 +220,8 @@ class KetVectorNoise(_NodeRouting, QuantumManagerKet):
 class DensityMatrixNoise(_NodeRouting, QuantumManagerDensity):
     """Pristine density manager + PER-NODE CPTP noise. The base density manager is ideal, so
     ALL noise lives here: overrides ``run_circuit`` to apply idle T1/T2 and a per-gate
-    depolarizing channel at each owning node's fidelity, reusing only the base's ideal
-    ``_merge_state`` / ``_measure`` helpers. Owns the Pauli-channel machinery itself."""
+    depolarizing channel at each owning node's fidelity, reusing the base's ideal
+    ``_measure`` helper. Owns the Pauli-channel machinery and its ``_merge_state`` helper."""
 
     # Single-qubit Pauli matrices + the alphabet each noise_type samples over.
     _PAULI = {"I": np.eye(2, dtype=complex),
@@ -243,13 +243,40 @@ class DensityMatrixNoise(_NodeRouting, QuantumManagerDensity):
         the base class, so it still builds this subclass for a noisy run."""
         return DENSITY_MATRIX_FORMALISM
 
+    def _merge_state(self, keys: list[int]) -> tuple[np.ndarray, list[int]]:
+        """Tensor the distinct density-matrix blocks touched by ``keys`` into one rho.
+
+        DQC-specific helper (the upstream base density manager does not provide it): the
+        noisy path operates gate-by-gate on the joint state, so any separable blocks the
+        gate/channel spans must be merged first.
+
+        Args:
+            keys (list[int]): keys whose (possibly separable) density-matrix blocks
+                should be merged into one joint state.
+
+        Returns:
+            tuple[np.ndarray, list[int]]: (rho, all_keys) where all_keys is the union of
+                every involved state's keys, in block order (mirrors ``_prepare_circuit``).
+        """
+        old_states: list[np.ndarray] = []
+        all_keys: list[int] = []
+        for key in keys:
+            qstate = self.states[key]
+            if qstate.keys[0] not in all_keys:
+                old_states.append(np.asarray(qstate.state, dtype=complex))
+                all_keys += list(qstate.keys)
+        rho = np.array([[1.0 + 0j]])
+        for state in old_states:
+            rho = np.kron(rho, state)
+        return rho, all_keys
+
     def run_circuit(self, circuit, keys, meas_samp=None, inject_gate_error=False):
         """Apply a circuit. When ``inject_gate_error`` OR any of ``keys`` is on a noisy node,
         run gate-by-gate with a CPTP channel after each gate at the owning node's fidelity
         (plus idle T1/T2 and readout error); otherwise the pristine ideal path."""
         from ..components.circuit import Circuit
         from ..kernel.quantum_state import DensityState
-        from ..kernel.quantum_manager.base import validate_circuit_run
+        from ..kernel.quantum_manager.utils import validate_circuit_run
         if not (inject_gate_error or self._noise_active(keys)):
             return super().run_circuit(circuit, keys, meas_samp)
 
