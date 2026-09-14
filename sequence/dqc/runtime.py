@@ -11,10 +11,11 @@ Purification never fires: ``purification_policy`` sets a LOW reservation target
 fidelity, so a multi-hop pair's swap-degraded bookkept fidelity still clears it and
 no distillation is ever requested -- required for correct multi-hop teledata moves.
 All trajectory noise is native to the quantum manager (per-node, self-registered by
-each DQCNode; a uniform NoiseConfig registers every qubit). No monkeypatching.
+each DQCNode). No monkeypatching.
 """
-from __future__ import annotations
 
+
+from __future__ import annotations
 import contextlib
 import io
 import json
@@ -23,15 +24,15 @@ from collections import Counter
 
 import numpy as np
 
-import sequence.dqc.dqc_app as _da
+import sequence.dqc.dqc_program as _da
 from sequence.topology.dqc_net_topo import DQCNetTopo
 from sequence.components.circuit import Circuit
 
 import sequence.dqc.architecture as _topo
 from sequence.dqc.compilers import build_compiler
-from sequence.dqc.controllers.central_node import CentralNodeController
+from sequence.dqc.controllers.barrier import BarrierController
 from sequence.dqc.controllers.adaptive_central_node import AdaptiveController
-from sequence.dqc.dqc_app import DQCApp
+from sequence.dqc.dqc_program import TeleportationDQCProgram
 from sequence.constants import KET_VECTOR_FORMALISM, DENSITY_MATRIX_FORMALISM
 from sequence.dqc.noise import KET_VECTOR_NOISE_FORMALISM, DENSITY_MATRIX_NOISE_FORMALISM
 
@@ -46,7 +47,7 @@ _FORMALISMS = {
     ("density", True): DENSITY_MATRIX_NOISE_FORMALISM,
 }
 
-CONTROLLERS = {"barrier": CentralNodeController, "adaptive": AdaptiveController}
+CONTROLLERS = {"barrier": BarrierController, "adaptive": AdaptiveController}
 
 STOP_BUDGET = 2e9   # per-step physical budget for sizing tl.stop_time
 
@@ -96,7 +97,7 @@ def compile_program(circuit, topology, partitioner="topo-aware", scheduler="fgp"
 
 def run(circuit, topology, partitioner="topo-aware", scheduler="fgp", seed=0,
         controller="barrier", data_qubits=None, expected=None,
-        noise=None, shots=1, meas_seed=9479, compiler=None, dump_config=None,
+        shots=1, meas_seed=9479, compiler=None, dump_config=None,
         formalism="ket") -> dict:
     """Compile + simulate ``circuit`` on ``topology`` and read out the data qubits.
 
@@ -109,16 +110,18 @@ def run(circuit, topology, partitioner="topo-aware", scheduler="fgp", seed=0,
     execute end-to-end on the physically simulated network through this one hook.
     ``controller`` is "barrier" or "adaptive".
 
-    Noise: pass a :class:`noise.NoiseConfig` and ``shots``>1 to run trajectory noise
-    (per-shot random Paulis); the result then reports ``success_prob`` (fraction of
-    shots that measured ``expected``) and a ``measured_hist``. With no noise and
-    ``shots=1`` it's the deterministic single run (``measured`` / ``ok``).
+    Noise: noise is entirely per-node -- declared on the topology (each DQCNode's
+    fidelities/T1/T2); a node with no noise params is ideal. When any node is noisy,
+    set ``shots``>1 to run trajectory noise (per-shot random Paulis); the result then
+    reports ``success_prob`` (fraction of shots that measured ``expected``) and a
+    ``measured_hist``. With no noisy node and ``shots=1`` it's the deterministic single
+    run (``measured`` / ``ok``).
 
     ``formalism``: state representation for the simulation -- "ket" (state-vector; noise
     is per-shot random Paulis, cheap, needs many shots) or "density" (density matrix;
-    noise is deterministic CPTP channels, exact in one shot, costlier). When ``noise`` /
-    per-node noise is active, the matching noise manager is selected automatically
-    (KetVectorNoise / DensityMatrixNoise).
+    noise is deterministic CPTP channels, exact in one shot, costlier). When any per-node
+    noise is present, the matching noise manager is selected automatically
+    (QuantumManagerKetNoise / QuantumManagerDensityNoise).
 
     ``dump_config``: optional path to write the EXACT expanded DQCNetTopo config that
     gets simulated (teleport-json layout, per-node noise inline on each DQCNode), so it
@@ -152,17 +155,9 @@ def run(circuit, topology, partitioner="topo-aware", scheduler="fgp", seed=0,
             qm = tl.quantum_manager
             qn = {node.name: node for node in net.nodes[DQCNetTopo.DQC_NODE]}
             # DQC noise: fidelities live on the NODES; the manager only routes key->node.
-            # A uniform NoiseConfig stamps its fidelities onto every otherwise-ideal node
-            # (per-node node_noise overrides it); then each noisy node routes its qubits to
-            # itself. No noise -> nothing registered -> the manager's ideal path.
+            # Each noisy node routes its own qubits to itself; a node with no noise params
+            # registers nothing -> the manager's ideal path for those qubits.
             if noise_active:
-                if noise is not None and not noise.is_noiseless():
-                    for nd in qn.values():
-                        if not nd.is_noisy:
-                            nd.one_qubit_gate_fid = noise.one_qubit_gate_fid
-                            nd.two_qubit_gate_fid = noise.two_qubit_gate_fid
-                            nd.measurement_fid = noise.measurement_fid
-                            nd.t1, nd.t2 = noise.t1, noise.t2
                 for nd in qn.values():
                     nd.register_qubits(qm)
                 qm.noise_rng = np.random.default_rng(noise_seed)
@@ -175,12 +170,13 @@ def run(circuit, topology, partitioner="topo-aware", scheduler="fgp", seed=0,
             tl.stop_time = int((program.max_step + 16) * STOP_BUDGET * 8)
             do = program.data_owners; ps = {nm: do[nm] for nm in qn}
             for nm, nd in qn.items():
-                DQCApp(node=nd, qubit_to_node=program.qubit_to_node,
-                       local_ops=program.node_ops[nm]["local"],
-                       remote_ops=program.node_ops[nm]["remote"], data_owned=do[nm], dt=2e6,
-                       peer_slots=ps, target_ops=program.node_ops[nm]["target"], controller=ctrl,
-                       hop_distances=hopmap.get(nm, {}), reservation_policy=purification_policy,
-                       move_ops=program.node_ops[nm].get("move", []))
+                TeleportationDQCProgram(
+                    node=nd, qubit_to_node=program.qubit_to_node,
+                    local_ops=program.node_ops[nm]["local"],
+                    remote_ops=program.node_ops[nm]["remote"], data_owned=do[nm],
+                    peer_slots=ps, controller_name=ctrl.name,
+                    hop_distances=hopmap.get(nm, {}), reservation_policy=purification_policy,
+                    move_ops=program.node_ops[nm].get("move", []))
             tl.init(); ctrl.start_execution()
             t0 = time.time(); tl.run(); wall = time.time() - t0
             meas = {}
@@ -195,18 +191,16 @@ def run(circuit, topology, partitioner="topo-aware", scheduler="fgp", seed=0,
             measured = sum(b << gq for gq, b in meas.items())
             return measured, ctrl.current, program, metrics, wall, tl.now() / 1e9
 
-    # Noise is active if a global config is passed, OR the topology declares any
-    # per-node local noise. Per-node knobs are applied natively by the ket manager
-    # (each DQCNode self-registers); a global config sets the uniform fallback.
+    # Noise is active iff the topology declares any per-node local noise. Per-node knobs
+    # are applied natively by the noise manager (each DQCNode self-registers its qubits).
     def _spec_noisy(p):
         return (p.get("one_qubit_gate_fid", 1.0) < 1.0 or p.get("two_qubit_gate_fid", 1.0) < 1.0
                 or p.get("measurement_fid", 1.0) < 1.0 or p.get("t1") is not None
                 or p.get("t2") is not None)
-    topo_noisy = any(_spec_noisy(p) for p in getattr(topology, "node_noise", {}).values())
-    noise_active = (noise is not None and not noise.is_noiseless()) or topo_noisy
+    noise_active = any(_spec_noisy(p) for p in getattr(topology, "node_noise", {}).values())
 
-    # All noise is native to the quantum manager now (per-node self-registered by each
-    # DQCNode; a global NoiseConfig sets the uniform fallback in _one_shot).
+    # All noise is native to the quantum manager (per-node self-registered by each
+    # noisy DQCNode in _one_shot).
     meas_rng = np.random.default_rng(meas_seed)
     successes = 0
     hist_shots = Counter()

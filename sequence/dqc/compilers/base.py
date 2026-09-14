@@ -5,7 +5,7 @@ Compilation is fully offline: the whole plan (placement + every step's ops) is
 decided before execution; the controller then replays it. A compiler is the unit
 that produces that plan. There are two shapes:
 
-  * :class:`~compilers.pipeline.PipelineCompiler` -- a PARTITIONER (placement) +
+  * :class:`~compilers.basic.BasicCompiler` -- a PARTITIONER (placement) +
     a SCHEDULER (execution), the classic two-stage static path.
   * :class:`~compilers.fgp.FGPCompiler` -- the monolithic time-sliced telegate +
     teledata hybrid, which does placement and scheduling together (no swappable

@@ -22,7 +22,6 @@ import json
 from typing import Dict, List, Tuple
 
 import networkx as nx
-
 from ..utils import graphs
 
 # Human-friendly node names; falls back to node{k} beyond the pool.
@@ -37,6 +36,16 @@ def node_names(n: int) -> List[str]:
 
 class DQCArchitecture:
     """Physical DQC network: nodes with data-memory capacity + physical links.
+
+    Build one either all at once (``DQCArchitecture(name, capacities, edges, node_noise=...)``)
+    or node-by-node with the builder, which declares each node's per-node noise inline::
+
+        arch = (DQCArchitecture("my_topo")
+                .add_node("alice", 2, two_qubit_gate_fid=0.99, t1=1e-3)
+                .add_node("bob", 2, measurement_fid=0.98)
+                .add_node("charlie", 1)                 # ideal
+                .add_edge("alice", "bob")
+                .add_edge("bob", "charlie"))
 
     Attributes:
         name: identifier.
@@ -56,21 +65,87 @@ class DQCArchitecture:
     # per-node local-noise fields carried through to the DQCNode constructor
     NOISE_KEYS = ("one_qubit_gate_fid", "two_qubit_gate_fid", "measurement_fid", "t1", "t2")
 
-    def __init__(self, name: str, capacities: Dict[str, int],
-                 edges: List[Tuple[str, str]], comm_memo: int = 16,
+    def __init__(self, name: str, capacities: Dict[str, int] = None,
+                 edges: List[Tuple[str, str]] = None, comm_memo: int = 16,
                  node_noise: Dict[str, dict] = None):
         self.name = name
-        self.capacities = dict(capacities)
-        self.node_names = list(capacities)
-        self.edges = [tuple(e) for e in edges]
+        self.capacities = dict(capacities or {})
+        self.edges = [tuple(e) for e in (edges or [])]
         self.comm_memo = comm_memo
         self.node_noise = {nm: dict(p) for nm, p in (node_noise or {}).items()}
         self.link_km = 5.0          # physical fibre length per hop (settable to sweep)
         self.mem_efficiency = 0.9   # memory (Bell-pair) efficiency (settable to sweep)
+        self._rebuild_graph()
+
+    @property
+    def node_names(self) -> List[str]:
+        """Node names in insertion order (derived from ``capacities``)."""
+        return list(self.capacities)
+
+    def _rebuild_graph(self) -> None:
+        """Recompute the interaction graph + all-pairs hop distances from the current
+        nodes/edges. Called after any structural mutation (:meth:`add_node`/:meth:`add_edge`)."""
         self._G = nx.Graph()
-        self._G.add_nodes_from(self.node_names)
+        self._G.add_nodes_from(self.capacities)
         self._G.add_edges_from(self.edges)
         self._apsp = dict(nx.all_pairs_shortest_path_length(self._G))
+
+    # ── incremental construction (node-centric builder) ─────────────────
+    def add_node(self, name: str, data_qubits: int = 1, *,
+                 one_qubit_gate_fid: float = 1.0, two_qubit_gate_fid: float = 1.0,
+                 measurement_fid: float = 1.0, t1: float = None, t2: float = None) -> "DQCArchitecture":
+        """Add (or update) a node with its data-memory capacity and per-node local noise.
+
+        Noise knobs left at their ideal defaults are omitted, so a node is ideal unless a
+        knob is set; re-adding a node with all-ideal knobs clears any prior noise on it.
+
+        Args:
+            name (str): node name.
+            data_qubits (int): data-memory capacity (max data qubits on this node).
+            one_qubit_gate_fid (float): 1-qubit gate fidelity (1.0 = ideal).
+            two_qubit_gate_fid (float): 2-qubit gate fidelity (1.0 = ideal).
+            measurement_fid (float): measurement/readout fidelity (1.0 = ideal).
+            t1 (float): amplitude-damping (T1) time in seconds (None = off).
+            t2 (float): dephasing (T2) time in seconds (None = off).
+
+        Returns:
+            DQCArchitecture: self (so calls can be chained).
+        """
+        self.capacities[name] = data_qubits
+        noise = {}
+        if one_qubit_gate_fid < 1.0:
+            noise["one_qubit_gate_fid"] = one_qubit_gate_fid
+        if two_qubit_gate_fid < 1.0:
+            noise["two_qubit_gate_fid"] = two_qubit_gate_fid
+        if measurement_fid < 1.0:
+            noise["measurement_fid"] = measurement_fid
+        if t1 is not None:
+            noise["t1"] = t1
+        if t2 is not None:
+            noise["t2"] = t2
+        if noise:
+            self.node_noise[name] = noise
+        else:
+            self.node_noise.pop(name, None)
+        self._rebuild_graph()
+        return self
+
+    def add_edge(self, a: str, b: str) -> "DQCArchitecture":
+        """Add a physical link between two already-added nodes.
+
+        Args:
+            a (str): one endpoint (must be an added node).
+            b (str): other endpoint (must be an added node).
+
+        Returns:
+            DQCArchitecture: self (so calls can be chained).
+        """
+        for nm in (a, b):
+            if nm not in self.capacities:
+                raise ValueError(f"add_edge: unknown node '{nm}'. Call add_node('{nm}', ...) first.")
+        self.edges.append((a, b))
+        self._rebuild_graph()
+        return self
 
     # ── network queries the compiler needs ──────────────────────────────
     def hop(self, a: str, b: str) -> int:
@@ -124,43 +199,12 @@ class DQCArchitecture:
         return cls(d["name"], d["capacities"], d["edges"], d.get("comm_memo", 16),
                    d.get("node_noise"))
 
-    @classmethod
-    def from_sim_config(cls, config: dict, name: str = None, comm_memo: int = 16) -> "DQCArchitecture":
-        """Build a DQCArchitecture from a full DQCNetTopo config (the expanded format):
-        per-node capacity = its ``data_memo_size``, physical edges = the DQCNode pairs
-        joined by each BSM node, and per-node noise from any inline ``f_*``/``t*`` fields."""
-        caps = {n["name"]: n["data_memo_size"] for n in config["nodes"]
-                if n.get("type") == "DQCNode"}
-        noise = {n["name"]: {k: n[k] for k in cls.NOISE_KEYS if k in n}
-                 for n in config["nodes"] if n.get("type") == "DQCNode"}
-        noise = {nm: p for nm, p in noise.items() if p}
-        bsm = {}
-        for qc in config["qchannels"]:
-            bsm.setdefault(qc["destination"], []).append(qc["source"])
-        edges = set()
-        for members in bsm.values():
-            for i in range(len(members)):
-                for j in range(i + 1, len(members)):
-                    edges.add(tuple(sorted((members[i], members[j]))))
-        return cls(name or config.get("name", "loaded"), caps, sorted(edges), comm_memo, noise)
-
-    @classmethod
-    def from_file(cls, path: str) -> "DQCArchitecture":
-        """Load a topology, auto-detecting the lean format (nodes/edges/capacities)
-        vs. a full DQCNetTopo config."""
-        import os
-        with open(path) as f:
-            d = json.load(f)
-        if "capacities" in d and "edges" in d:
-            return cls(d.get("name", os.path.basename(path)), d["capacities"],
-                       d["edges"], d.get("comm_memo", 16), d.get("node_noise"))
-        return cls.from_sim_config(d, name=os.path.splitext(os.path.basename(path))[0])
-
     # ── expansion to the SeQUeNCe DQCNetTopo config ─────────────────────
     def sim_config(self, comm_memo: int = None) -> dict:
         """Full DQCNetTopo config: a BSM node per physical edge + classical/quantum
         channels (teleport-json layout). ``data_memo_size`` is the node's declared
-        hardware capacity; per-node noise appears inline on each DQCNode entry."""
+        hardware capacity; per-node noise appears inline on each DQCNode entry.
+        """
         comm = self.comm_memo if comm_memo is None else comm_memo
         nodes = [{"name": nm, "type": "DQCNode", "seed": i + 1,
                   "memo_size": max(comm, self.capacities[nm] + 4),
@@ -191,16 +235,6 @@ class DQCArchitecture:
                                                                 "efficiency": self.mem_efficiency}}},
                 "nodes": nodes, "qchannels": qch, "cchannels": cch,
                 "stop_time": 10_000_000_000_000, "is_parallel": False}
-
-    def dump_sim_config(self, path: str, comm_memo: int = None, indent: int = 2) -> dict:
-        """Write the expanded DQCNetTopo config (same dict :meth:`sim_config` returns,
-        teleport-json layout) to ``path`` so it can be inspected or fed straight to
-        ``DQCNetTopo``. Per-node noise knobs appear inline on each DQCNode entry.
-        Returns the config dict."""
-        config = self.sim_config(comm_memo)
-        with open(path, "w") as f:
-            json.dump(config, f, indent=indent)
-        return config
 
 
 # Back-compat / convenience aliases.

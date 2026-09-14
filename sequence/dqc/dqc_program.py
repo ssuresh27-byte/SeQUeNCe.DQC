@@ -1,0 +1,719 @@
+"""Per-node QPU execution agents for distributed quantum computing (DQC).
+
+A QPU agent runs on one quantum node. It registers on the node, receives compiled
+*step* messages broadcast by the central controller, and executes that step's work
+on the node's QPU:
+
+* local (single-node) gates run immediately;
+* remote (two-qubit) gates and qubit relocations ("moves") are executed by the
+  subclass and complete asynchronously, so the agent *defers* the controller ACK
+  for a step until every remote op it launched for that step reports completion.
+
+:class:`DQCProgram` is the abstract base: it owns the controller/node contract
+(registration, step dispatch, the deferred-ACK barrier, local-gate execution, and
+slot resolution) and leaves *how* a remote gate / move is physically realized to
+subclasses via :meth:`~DQCProgram._run_remote` / :meth:`~DQCProgram._run_move`.
+:class:`TeleportationDQCProgram` implements those with entanglement teleportation
+(:class:`TelegateApp` for remote gates, :class:`TeledataApp` for moves).
+
+Contents
+--------
+DQCMsgType / DQCMessage
+    Controller <-> agent step / ACK messages.
+_DualAppRouter
+    Fans the node's single app slot out to both sub-apps (telegate + teledata).
+DQCProgram
+    Abstract barriered per-node executor (controller/node contract).
+TeleportationDQCProgram
+    Concrete agent: remote gates via telegate, moves via teledata.
+"""
+
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
+from enum import Enum, auto
+from typing import Any, Callable, Dict, List, Optional
+
+from sequence.message import Message
+from sequence.components.circuit import Circuit
+from sequence.kernel.process import Process
+from sequence.kernel.event import Event
+from sequence.utils import log
+from sequence.app.teleportation import TelegateApp, TeledataApp
+
+
+# ── Reservation / timing tuning ─────────────────────────────────────────────
+# All telegate timing is derived from the network's classical-channel (cc) delay
+# so it stays correct if the topology's distances/delays change.
+#
+# TelegateApp now releases its resources via *early expire* the instant a gate
+# completes (see TelegateApp._early_expire, mirroring sequence's
+# base_teleport_app): the RSVP rules for the session are expired and the comm
+# memory is reset to RAW. This removes the old UPPER-bound fragility — a finished
+# session no longer holds its comm memory until the clock reaches end_time, so
+# consecutive telegates on a node can't overlap into timecard exhaustion.
+#
+# The window's LOWER bound still matters: it must be LONGER than one full
+# teleported-CNOT (entanglement gen + corrections), or the rules expire mid-gate
+# and the memory resets to RAW. The window cannot be made arbitrarily large
+# either: early expire only fires at completion (it has to — expiring sooner
+# would wipe the EPR pair before the gate consumes it), so an over-wide window
+# still lets the RSVP layer's continued entanglement generation/scheduling
+# corrupt the in-flight gate (observed at n_data=5 with a 1000x window). 100x
+# comfortably brackets a single gate while staying clear of that regime.
+TELEGATE_WINDOW_CC_MULT = 400    # reservation window = this * cc_delay
+RESERVATION_SLACK_CC_MULT = 2    # reservation opens this * cc_delay after "now"
+# A local (single-node) gate takes a small but nonzero time. It is charged per
+# local-only controller step (gates within one step parallelise across qubits);
+# a distributed telegate is ~100x slower (entanglement generation + classical
+# comm), so local gates are "free" whenever a step also carries a telegate. A
+# no-op step (a node idle while others work) costs nothing.
+LOCAL_GATE_TIME = 1e6            # ps; reasonable local gate duration (~1 microsecond)
+DEFAULT_CC_DELAY = 5e8           # ps; fallback if a peer has no direct cc channel
+
+
+# ── Controller <-> agent messages ───────────────────────────────────────────
+class DQCMsgType(Enum):
+    """Message types for DQC communications."""
+    STEP_MESSAGE = auto()   # Controller -> Node: broadcast step to execute
+    ACK = auto()  # Node -> Controller: acknowledge completion of a step
+
+
+class DQCMessage(Message):
+    """DQC message payloads.
+
+    ACK:
+    • step: Controller step index completed on this node
+    • node: Sender node name (for controller bookkeeping)
+    """
+
+    def __init__(self, msg_type: DQCMsgType, receiver: str, **kwargs):
+        super().__init__(msg_type=msg_type, receiver=receiver)
+
+        if msg_type is DQCMsgType.STEP_MESSAGE:
+            self.step = kwargs['step']
+            self.node = kwargs['node']
+            self.string = f"DQCMessage(type={msg_type}, moving to step={self.step}, sending from controller to node={self.node})"
+
+        elif msg_type is DQCMsgType.ACK:
+            self.step = kwargs['step']
+            self.node = kwargs['node']
+            self.string = f"DQCMessage(type={msg_type}, step={self.step} is complete, sending from {self.node} to controller)"
+
+    def __str__(self):
+        return self.string
+
+
+# ── App-callback router ─────────────────────────────────────────────────────
+class _DualAppRouter:
+    """Routes a node's single app-callback slot to BOTH a TelegateApp and a
+    TeledataApp.
+
+    A :class:`~sequence.topology.node.DQCNode` has one ``node.app`` slot, and
+    memory/reservation callbacks go through it. To run telegate *and* teledata on
+    the same node (needed for a hybrid compiler), we register this router as the
+    node's app and dispatch each callback to the right sub-app:
+
+    * reservation callbacks are routed by the reservation's ``app_label`` (set to
+      the initiating app's name and carried to the responder on the RSVP message);
+    * ``get_memory`` is routed by which sub-app has that memory index mapped to a
+      reservation (each app only maps its own, thanks to the label routing above).
+    """
+
+    def __init__(self, tgate: TelegateApp, tdata: TeledataApp):
+        self.tgate = tgate
+        self.tdata = tdata
+        self.name = "dqc_app_router"
+
+    def _route_by_label(self, reservation):
+        label = getattr(reservation, "app_label", "") or ""
+        return self.tdata if "teledata" in label else self.tgate
+
+    def get_reservation_result(self, reservation, result: bool) -> None:
+        self._route_by_label(reservation).get_reservation_result(reservation, result)
+
+    def get_other_reservation(self, reservation) -> None:
+        self._route_by_label(reservation).get_other_reservation(reservation)
+
+    def get_memory(self, info) -> None:
+        if info.index in self.tdata.memo_to_reservation:
+            self.tdata.get_memory(info)
+        elif info.index in self.tgate.memo_to_reservation:
+            self.tgate.get_memory(info)
+
+
+# ── QPU agent (abstract base) ───────────────────────────────────────────────
+class DQCProgram(ABC):
+    """Barriered (non-pipelined) per-node QPU executor — the controller contract.
+
+    Registers on its node (``node.protocols``), receives compiled step messages
+    from the central controller, runs each step's work on this node's QPU, and
+    ACKs the controller. Subclasses decide *how* a remote (two-qubit) gate or a
+    qubit move is physically executed by implementing :meth:`_run_remote` and
+    :meth:`_run_move`; the base handles everything else.
+
+    Behavior
+    --------
+    • Each controller step is executed *to completion* on this node before an ACK.
+    • Local-only steps execute immediately and ACK right away.
+    • A step containing a remote gate/move defers its ACK until the subclass
+      reports completion (via :meth:`_ack_deferred_unit`).
+    • No queuing or pipelining of future steps is performed.
+
+    Conventions
+    -----------
+    • For remote ops, ``op['targets'] = [control, target]`` using **global**
+      qubit indices.
+
+    Args:
+        node: The underlying :class:`~sequence.topology.node.DQCNode`.
+        qubit_to_node (Dict[int, str]): global qubit index -> owning node name.
+        local_ops (List[dict]): this node's local ops (each has ``step``, ``gate``,
+            ``targets``).
+        remote_ops (List[dict]): this node's remote (two-qubit) ops.
+        data_owned (Dict[int, int]): global qubit index -> local data-memory slot.
+        peer_slots (Dict[str, Dict[int, int]], optional): ``{peer: {global_q:
+            peer_local_slot}}`` — each peer's slot for a global qubit.
+        controller_name (str, optional): node name of the central controller; ACKs
+            are sent to it over this node's classical channel (default ``"controller"``).
+        move_ops (List[dict], optional): this node's qubit moves.
+
+    Attributes:
+        name (str): protocol receiver label used to route StepMessages (``"qpu_agent"``).
+        _pending (Dict[int, int]): step -> count of remote ops on this node still in
+            flight; the step's ACK is deferred until the count hits 0.
+    """
+
+    def __init__(self,
+                 node,
+                 qubit_to_node: Dict[int, str],
+                 local_ops:  List[dict],
+                 remote_ops: List[dict],
+                 data_owned: Dict[int, int],
+                 peer_slots: Optional[Dict[str, Dict[int, int]]] = None,
+                 controller_name: str = "controller",
+                 move_ops: Optional[List[dict]] = None):
+        self.name = "qpu_agent"
+        self.protocol_type = "qpu_agent"  # Required by sequence framework
+        self.node = node
+        self.tl = node.timeline
+        self.controller_name = controller_name
+
+        # Shared logical-qubit -> qstate-key registry, owned by the noise-aware quantum
+        # manager (None on a plain/ideal formalism). The agent maintains it as it resolves
+        # keys, so the noise layer and peers share one view of where each logical qubit lives.
+        self.registry = getattr(self.tl.quantum_manager, "registry", None)
+
+        # Placement / slot bookkeeping (data_owned + peer_slots are shared dicts,
+        # so a move updates every party's view in place).
+        self.qubit_to_node = qubit_to_node
+        self.data_owned = data_owned
+        self.data_array = node.data_memo_arr_name
+        self.peer_slots = peer_slots or {}
+
+        # Ops grouped by controller step (a packed step may hold >1 op of a role).
+        self.local_map = self._group_by_step(local_ops)
+        self.remote_map = self._group_by_step(remote_ops)
+        self.move_map = self._group_by_step(move_ops or [])
+
+        # Steps awaiting a remote op before ACKing, mapped to the number still in
+        # flight for that step. A step is ACKed only when the count hits 0, so a
+        # node hosting two telegates in one packed step waits for BOTH.
+        self._pending: Dict[int, int] = {}
+        self.local_gate_time = LOCAL_GATE_TIME
+
+        # Register in node.protocols so the controller's StepMessages route here
+        # (the node dispatches received messages by matching protocol.name).
+        node.protocols.append(self)
+
+    @staticmethod
+    def _group_by_step(ops: List[dict]) -> Dict[int, List[dict]]:
+        """Group ops into ``{step: [op, ...]}``. Keying to a LIST matters: a packing
+        compiler can place several independent gates on the same step, so a
+        ``{step: op}`` dict would silently drop all but the last."""
+        grouped: Dict[int, List[dict]] = {}
+        for op in ops:
+            grouped.setdefault(op['step'], []).append(op)
+        return grouped
+
+    # ── controller step handling ────────────────────────────────────────────
+    def received_message(self, src: str, msg: Message) -> bool:
+        """Execute the controller's step on this node, then ACK.
+
+        A packed step may carry several ops of each kind. Local gates run
+        synchronously; remote gates and moves start an async op and *defer* the
+        ACK until it completes. A step with no work here, or only local work, ACKs
+        right away (see :meth:`_ack_local`).
+
+        Args:
+            src (str): sender (the controller).
+            msg (Message): step message carrying ``step``.
+
+        Returns:
+            bool: always ``True`` (message handled).
+        """
+        step = msg.step
+        kinds = ((self.local_map, self._run_local),
+                 (self.remote_map, self._run_remote),
+                 (self.move_map, self._run_move))
+        if not any(step in step_map for step_map, _ in kinds):
+            self._ack_local(step, "no-op")
+            return True
+        # `deferred` becomes True once any remote op is launched, so the ACK waits
+        # for its pending counter to drain (see _ack_deferred_unit). Otherwise the
+        # step is local-only.
+        deferred = False
+        for step_map, handler in kinds:
+            for op in step_map.get(step, []):
+                deferred = handler(op, step) or deferred
+        if not deferred:
+            self._ack_local(step, "local-only")
+        return True
+
+    def _run_local(self, op: dict, step: int) -> bool:
+        """Run one local gate immediately; local work never defers the ACK."""
+        log.logger.debug(f"[{self.node.name}] local step={step} gate={op.get('gate')} targets={op.get('targets')}")
+        self._do_local(op)
+        return False
+
+    @abstractmethod
+    def _run_remote(self, op: dict, step: int) -> bool:
+        """Execute this node's half of a remote (two-qubit) gate for ``step``.
+
+        The op is delivered to both parties; this node owns the control or the
+        target qubit. Must call :meth:`_defer` and return ``True`` if this node is
+        a party (so the step's ACK waits for completion), else return ``False``.
+        """
+
+    @abstractmethod
+    def _run_move(self, op: dict, step: int) -> bool:
+        """Relocate a qubit for ``step`` (this node is the source or the dest).
+
+        Must call :meth:`_defer` and return ``True`` if this node is a party, else
+        return ``False``.
+        """
+
+    # ── local gate execution ────────────────────────────────────────────────
+    def _do_local(self, op: Dict[str, Any]) -> None:
+        """Execute a local (single-node) gate operation."""
+        gate = str(op.get("gate", "")).lower()
+
+        # Targets can be under 'targets', 'qubits', or 'qubit'
+        qs = op.get("targets", [])
+        if not qs:
+            qs = op.get("qubits", [])
+        if not qs and "qubit" in op:
+            qs = [op["qubit"]]
+
+        if not qs:
+            log.logger.warning(f"[qpu_agent:{self.node.name}] _do_local with no targets: {op}")
+            return
+
+        # Map global qubit IDs → local memory slots on this node
+        arr = self.node.components[self.data_array]   # MemoryArray
+        slots: List[int] = [self._local_slot(q) for q in qs]
+
+        # Get the QState keys through the shared logical-qubit→key registry (see _key_for)
+        keys: List[int] = [self._key_for(q, arr) for q in qs]
+
+        # slot -> local circuit index (0..len(slots)-1)
+        slot_to_idx = {slot: i for i, slot in enumerate(slots)}
+
+        # Circuit acts on exactly these |slots| qubits, in the order of 'keys'
+        circ = Circuit(len(slots))
+
+        log.logger.debug(f"[qpu_agent:{self.node.name}] _do_local gate={gate}, qs={qs}, slots={slots}, keys={keys}")
+
+        # ---- Apply gates using local circuit indices ----
+        # Single-qubit gates apply to every target; two-qubit gates take
+        # (control, target) = the first two slots; 'phase' also takes an angle.
+        idx = [slot_to_idx[s] for s in slots]
+        if gate in ("h", "x", "y", "z", "s", "sdg", "t", "measure"):
+            for i in idx:
+                getattr(circ, gate)(i)
+        elif gate == "phase":
+            for i in idx:
+                circ.phase(i, op.get("arg", 0.0))
+        elif gate in ("cx", "cz") and len(idx) >= 2:
+            getattr(circ, gate)(idx[0], idx[1])   # (control, target)
+        else:
+            log.logger.debug(f"[{self.node.name}] unsupported local gate '{gate}' op={op}")
+            return
+
+        # ---- Run circuit and remap any changed qstate keys back onto the slots ----
+        rnd = self.node.get_generator().random()
+        res: Dict[int, int] = self.tl.quantum_manager.run_circuit(circ, keys, rnd)
+        if res:   # empty res => unitary-only, in-place; keys unchanged
+            for gq, slot, old_key in zip(qs, slots, keys):
+                new_key = res.get(old_key, old_key)
+                if new_key != old_key:
+                    arr.memories[slot].qstate_key = new_key
+                    if self.registry is not None:
+                        self.registry.set_key(gq, new_key)
+
+    # ── ACK & controller messaging ──────────────────────────────────────────
+    def _defer(self, step: int) -> None:
+        """Register one more in-flight remote op for ``step``; the step's ACK is
+        held until every such op has completed (see ``_ack_deferred_unit``)."""
+        self._pending[step] = self._pending.get(step, 0) + 1
+        log.logger.info(f"[qpu_agent:{self.node.name}] deferring step {step} (pending now: {self._pending})")
+
+    def _ack_deferred_unit(self, step: int) -> None:
+        """Mark one deferred unit of ``step`` complete; ACK when the count hits 0.
+
+        Called from a subclass's completion callbacks: a step ACKs only once every
+        in-flight remote op on this node is done.
+        """
+        if step is not None and step in self._pending:
+            self._pending[step] -= 1
+            if self._pending[step] <= 0:
+                del self._pending[step]
+                ack = DQCMessage(DQCMsgType.ACK, receiver="controller", step=step, node=self.node.name)
+                self._send_to_controller(ack)
+                log.logger.info(f"[qpu_agent:{self.node.name}] deferred ACK sent for step={step}")
+
+    def _ack_local(self, step: int, reason: str = "") -> None:
+        """ACK a local/no-op step, charging a local-gate time to real work.
+
+        A step with actual local gates on this node ("local-only") takes one
+        local-gate duration; a "no-op" step (this node idle while others work)
+        ACKs immediately (0). Since the controller advances only when EVERY node
+        has ACKed, a step's duration is the slowest node's work: a telegate time
+        if the step carries one (that ACK is deferred to remote-op completion),
+        else one local-gate time if any node has local work, else 0.
+        """
+        delay = self.local_gate_time if reason == "local-only" else 0
+        ack = DQCMessage(DQCMsgType.ACK, receiver="controller", step=step, node=self.node.name)
+        ev = Event(int(self.tl.now() + delay),
+                   Process(self, "_send_to_controller", [ack]))
+        self.tl.schedule(ev)
+        log.logger.debug(f"[qpu_agent:{self.node.name}] ACK for step={step} scheduled "
+                         f"after delay={delay} ({reason})")
+
+    def _send_to_controller(self, msg: Message):
+        """Send an ACK to the controller over this node's classical channel. The
+        controller is a real topology node, so this is an ordinary message send
+        (routed by ``controller_name``); no direct object reference is needed."""
+        if self.controller_name in getattr(self.node, "cchannels", {}):
+            log.logger.debug(f"[qpu_agent:{self.node.name}] ACK -> {self.controller_name} via channel: {msg}")
+            self.node.send_message(self.controller_name, msg)
+        else:
+            log.logger.warning(f"[qpu_agent:{self.node.name}] No classical channel to controller "
+                               f"'{self.controller_name}'; ACK dropped: {msg}")
+
+    # ── slot / key helpers ──────────────────────────────────────────────────
+    def _key_for(self, global_q: int, arr=None) -> int:
+        """Current quantum-manager key for global (logical) qubit ``global_q``.
+
+        Resolved from this node's data memory (authoritative -- a measurement can remap a
+        slot's key) and recorded in the shared logical-qubit->key registry, so the agent and
+        the noise layer share one view of where each logical qubit currently lives.
+
+        Args:
+            global_q (int): global (logical) qubit index owned by this node.
+            arr (MemoryArray): this node's data memory array; looked up if not supplied.
+
+        Returns:
+            int: the qstate key for ``global_q``.
+        """
+        if arr is None:
+            arr = self.node.components[self.data_array]
+        key = arr.memories[self._local_slot(global_q)].qstate_key
+        if self.registry is not None:
+            self.registry.set_key(global_q, key)
+        return key
+
+    def _local_slot(self, global_q: int) -> int:
+        """Resolve the local data-memory slot for a global qubit index.
+
+        Args:
+            global_q (int): Global qubit index.
+
+        Returns:
+            int: Local slot index in this node's data memory.
+
+        Raises:
+            KeyError: If this node does not own ``global_q`` according to ``data_owned``.
+        """
+        if global_q not in self.data_owned:
+            msg = (f"{self.node.name}: global_q={global_q} not owned by this node. "
+                   f"data_owned keys={list(self.data_owned.keys())}")
+            log.logger.error(msg)
+            raise KeyError(msg)
+        return self.data_owned[global_q]
+
+    def _remote_slot(self, peer_node: str, global_q: int) -> int:
+        """Resolve the peer node's local data-memory slot for a global qubit.
+
+        Args:
+            peer_node (str): Peer node name.
+            global_q (int): Global qubit index.
+
+        Returns:
+            int: Peer node's local slot index for ``global_q``.
+
+        Raises:
+            KeyError: If ``peer_slots`` lacks an entry for the given peer or qubit.
+        """
+        try:
+            return self.peer_slots[peer_node][global_q]
+        except Exception:
+            msg = (f"{self.node.name}: missing peer slot for node='{peer_node}', "
+                   f"global_q={global_q}. Pass peer_slots={{node:{{q:slot}}}} when constructing the agent.")
+            log.logger.error(msg)
+            raise KeyError(msg)
+
+
+# ── Teleportation agent (concrete) ──────────────────────────────────────────
+class TeleportationDQCProgram(DQCProgram):
+    """QPU agent that realizes remote gates and moves with entanglement teleportation.
+
+    Remote two-qubit gates run via :class:`TelegateApp` (teleported CNOT/CZ) and
+    qubit moves via :class:`TeledataApp` (state teleportation). Both sub-apps share
+    the node's single app slot through a :class:`_DualAppRouter`, and each reports
+    completion through a callback that releases the step's deferred ACK.
+
+    Remote CZ is normalized to CNOT.
+
+    Args (in addition to :class:`DQCProgram`):
+        hop_distances (Dict[str, int], optional): hop distance to each peer.
+        reservation_policy (Callable[[int], tuple], optional): hop count ->
+            (memory_size, target_fidelity) for entanglement reservations.
+
+    Attributes:
+        tgate (TelegateApp): executes teleported gates on this node.
+        tdata (TeledataApp): executes qubit moves on this node.
+    """
+
+    def __init__(self,
+                 node,
+                 qubit_to_node: Dict[int, str],
+                 local_ops:  List[dict],
+                 remote_ops: List[dict],
+                 data_owned: Dict[int, int],
+                 peer_slots: Optional[Dict[str, Dict[int, int]]] = None,
+                 controller_name: str = "controller",
+                 hop_distances: Optional[Dict[str, int]] = None,
+                 reservation_policy: Optional[Callable[[int], tuple]] = None,
+                 move_ops: Optional[List[dict]] = None):
+        super().__init__(node, qubit_to_node, local_ops, remote_ops, data_owned,
+                         peer_slots=peer_slots, controller_name=controller_name, move_ops=move_ops)
+
+        # Physical hop-distance to each peer + policy mapping hop count ->
+        # (memory_size, target_fidelity). A multi-hop pair is degraded by every
+        # swap, so deeper paths reserve MORE raw pairs to purify back up to the
+        # target fidelity; a direct (1-hop) pair needs none. Default keeps the
+        # single-pair / perfect-fidelity behaviour when no policy is supplied.
+        self.hop_distances = hop_distances or {}
+        self.reservation_policy = reservation_policy or (lambda hops: (1, 1.0))
+
+        # Representative classical-channel delay (ps) read from the network config;
+        # sizes the reservation windows (see _reservation_for / _peer_cc_delay).
+        cc_delays = [getattr(ch, "delay", 0) for ch in node.cchannels.values()
+                     if getattr(ch, "delay", 0) and getattr(ch, "delay", 0) > 0]
+        self.cc_delay = float(min(cc_delays)) if cc_delays else DEFAULT_CC_DELAY
+
+        # One TelegateApp + one TeledataApp per node. Each calls node.set_app() in
+        # its ctor, so the LAST one wins that single slot; we then install a router
+        # that dispatches to both.
+        self.tgate = TelegateApp(self.node)
+        self.tdata = TeledataApp(self.node)
+        self._router = _DualAppRouter(self.tgate, self.tdata)
+        self.node.set_app(self._router)
+
+        # Teledata move bookkeeping.
+        #   _expected_moves: dest_slot -> (step, global_q) for moves landing here.
+        #   _move_by_srcslot: source local slot -> (step, global_q, dest) for moves
+        #                     leaving here (matched on the source-completion hook).
+        self._expected_moves: Dict[int, tuple] = {}
+        self._move_by_srcslot: Dict[int, tuple] = {}
+
+        # Completion callbacks -- each releases the step's deferred ACK (via
+        # _ack_deferred_unit) when its remote op finishes locally:
+        #   telegate        -> the control/target gate completed
+        #   teledata dest   -> the moved state has landed here
+        #   teledata source -> the qubit has left this node
+        self.tgate.telegate_complete = self._on_telegate_complete
+        self.tdata.on_complete = self._on_teledata_complete
+        self.tdata.on_source_complete = self._on_teledata_source_complete
+
+    # ── remote (telegate) gates ─────────────────────────────────────────────
+    def _run_remote(self, op: dict, step: int) -> bool:
+        """Start this node's half of a teleported CNOT/CZ. The op is delivered to
+        both parties, so this node is the control owner (start the telegate) or the
+        target owner (lock its slot). Returns True (ACK deferred) if we are a party.
+        """
+        qs = op.get("qubits", op.get("targets", []))
+        if len(qs) != 2:
+            log.logger.warning(f"[{self.node.name}] malformed remote op @step={step}: {qs}")
+            return False
+        ctrl_q, tgt_q = qs
+        peer = self.qubit_to_node[tgt_q]
+        if self.node.name == self.qubit_to_node[ctrl_q]:
+            self._defer(step)
+            self._start_telegate_control(op, ctrl_q, self._local_slot(ctrl_q), peer, tgt_q, step=step)
+            return True
+        if self.node.name == peer:
+            self._lock_target_slot(tgt_q, step)
+            self._defer(step)
+            return True
+        return False
+
+    def _lock_target_slot(self, tgt_q: int, step: int) -> None:
+        """Target side of a telegate: tell the TelegateApp which local data slot to
+        land the corrected qubit in for ``step``."""
+        self.tgate._current_step = step
+        self.tgate.set_target_slot_for_step(step, self._local_slot(tgt_q))
+
+    def _start_telegate_control(self, op: Dict[str, Any],
+                                ctrl_q: int, ctrl_slot: int,
+                                peer_nm: str, tgt_q: int,
+                                step: int) -> None:
+        """Start a teleported CNOT where this node owns the control qubit.
+
+        The target node locks its own local slot upon receiving the same
+        controller step. The ACK for ``step`` is deferred and sent by the
+        :class:`TelegateApp` completion callback (:meth:`_on_telegate_complete`).
+
+        Args:
+            op (Dict[str, Any]): Operation descriptor for the remote op.
+            ctrl_q (int): Global index of the control qubit owned by this node.
+            ctrl_slot (int): Local data-memory slot index for ``ctrl_q``.
+            peer_nm (str): Peer (target-owner) node name.
+            tgt_q (int): Global index of the target qubit owned by ``peer_nm``.
+            step (int): Controller step index.
+
+        Side Effects:
+            Starts the teleported CNOT via :class:`TelegateApp` over a reservation
+            window sized to the peer's distance.
+        """
+        gate_typ = str(op.get('gate', 'cx')).lower()   # 'cx' or 'cz'; forwarded to the telegate
+
+        arr = self.node.components[self.data_array]
+        key = arr.memories[ctrl_slot].qstate_key       # for the log below
+
+        self.tgate._current_step = step
+
+        tgt_slot = self._remote_slot(peer_nm, tgt_q)
+        t0, t1, mem_size, fidelity, hops = self._reservation_for(peer_nm)
+
+        log.logger.info(f"Executing REMOTE gate={gate_typ} step={step} targets={op['targets']}; CONTROL on {self.node.name}(q={ctrl_q},slot={ctrl_slot},key={key}) → TARGET {peer_nm}(q={tgt_q},slot={tgt_slot}); hops={hops} mem_size={mem_size} fid={fidelity}; t=[{t0},{t1}]")
+
+        self.tgate.start(
+            responder=peer_nm,
+            start_t=t0,
+            end_t=t1,
+            memory_size=mem_size,
+            fidelity=fidelity,
+            control_src=ctrl_slot,  # control (local)
+            target_src=tgt_slot,    # target (peer)
+            gate_type=gate_typ,     # 'cx' (teleported CNOT) or 'cz' (teleported CZ)
+        )
+
+        log.logger.info(f"TeleGateCNOT started step={step}: control(local q={ctrl_q} slot={ctrl_slot}) → target({peer_nm} q={tgt_q} slot={tgt_slot}); t=[{t0},{t1}]")
+
+    # ── teledata moves (qubit relocation) ───────────────────────────────────
+    def _run_move(self, op: dict, step: int) -> bool:
+        """Teledata move: start the teleport if we own the qubit, or reserve the
+        landing slot if it is being teleported to us. Returns True if we are a party.
+        """
+        q, dest, dest_slot = op["qubit"], op["dest"], op["dest_slot"]
+        if self.node.name == self.qubit_to_node[q]:
+            self._defer(step)
+            self._start_teleport_source(q, self._local_slot(q), dest, dest_slot, step=step)
+            return True
+        if self.node.name == dest:
+            self._expected_moves[dest_slot] = (step, q)
+            self._defer(step)
+            return True
+        return False
+
+    def _start_teleport_source(self, q: int, src_slot: int,
+                               dest: str, dest_slot: int, step: int) -> None:
+        """Initiate a teledata move of global qubit ``q`` from this (source) node to
+        ``dest``'s ``dest_slot``. Defers the step ACK until Bob acknowledges."""
+        self._move_by_srcslot[src_slot] = (step, q, dest, dest_slot)
+
+        t0, t1, mem_size, fidelity, hops = self._reservation_for(dest)
+
+        log.logger.info(f"[qpu_agent:{self.node.name}] TELEPORT q={q} slot={src_slot} → {dest} slot={dest_slot}; "
+                        f"hops={hops} mem_size={mem_size} fid={fidelity}; t=[{t0},{t1}]")
+        self.tdata.start(responder=dest, start_t=t0, end_t=t1, memory_size=mem_size,
+                         fidelity=fidelity, data_src=src_slot, dest_slot=dest_slot)
+
+    # ── completion callbacks (release deferred ACKs) ────────────────────────
+    def _on_telegate_complete(self, data_key: int, role: str = "unknown"):
+        """Release a step's deferred ACK when its teleported gate finishes locally.
+
+        Installed as ``TelegateApp.telegate_complete``. Under the barrier only one
+        step is network-active at a time, so an in-flight telegate belongs to the
+        highest pending step; fall back to the telegate's current step if nothing
+        is pending.
+
+        Args:
+            data_key (int): quantum-manager key of the completed local data qubit.
+            role (str): completing party's role (kept for the callback signature).
+        """
+        step = max(self._pending) if self._pending else getattr(self.tgate, "_current_step", None)
+        self._ack_deferred_unit(step)
+
+    def _on_teledata_complete(self, data_key: int) -> None:
+        """DEST side: the moved state is now in a local data slot. Claim the qubit
+        into this node's data map (shared, so every node sees the new location) and
+        release the deferred step ACK."""
+        arr = self.node.components[self.data_array]
+        slot = next((i for i, m in enumerate(arr.memories) if m.qstate_key == data_key), None)
+        if slot is None or slot not in self._expected_moves:
+            # Not an agent-managed move (e.g. a bare TeledataApp test) -> ignore.
+            return
+        step, q = self._expected_moves.pop(slot)
+        self.qubit_to_node[q] = self.node.name   # shared dict -> visible everywhere
+        self.data_owned[q] = slot                # this node's map == peer_slots[dest]
+        if self.registry is not None:            # shared logical-qubit->key view follows q here
+            self.registry.set_key(q, data_key)
+        log.logger.info(f"[qpu_agent:{self.node.name}] MOVE arrived: q={q} now here at slot={slot} (step={step})")
+        self._ack_deferred_unit(step)
+
+    def _on_teledata_source_complete(self, protocol) -> None:
+        """SOURCE side: Bob acknowledged the teleport, so ``q`` has left this node.
+        Drop it from this node's data map and ACK the step."""
+        src_slot = getattr(protocol, "data_memory_index", None)
+        mv = self._move_by_srcslot.pop(src_slot, None)
+        if mv is None:
+            return
+        step, q, dest = mv[0], mv[1], mv[2]
+        self.data_owned.pop(q, None)             # this node no longer owns q
+        log.logger.info(f"[qpu_agent:{self.node.name}] MOVE departed: q={q} left slot={src_slot} → {dest} (step={step})")
+        self._ack_deferred_unit(step)
+
+    # ── reservation helpers ─────────────────────────────────────────────────
+    def _peer_cc_delay(self, peer: str) -> float:
+        """Classical-channel delay (ps) to ``peer``, read from the network config.
+
+        Falls back to this node's representative cc delay (and ultimately
+        ``DEFAULT_CC_DELAY``) if there is no direct channel to ``peer``.
+        """
+        ch = self.node.cchannels.get(peer)
+        delay = getattr(ch, "delay", 0) if ch is not None else 0
+        return float(delay) if delay and delay > 0 else self.cc_delay
+
+    def _reservation_for(self, peer: str) -> tuple:
+        """Reservation window + size for an entanglement session to ``peer``.
+
+        Returns ``(start_t, end_t, memory_size, fidelity, hops)``. The window is
+        derived from the peer's classical-channel delay (opens after a couple of
+        cc hops; sized generously — TelegateApp's early expire frees the comm
+        memory the instant the gate completes, so an over-long window can't starve
+        the next session). The size follows the injected reservation policy: deeper
+        multi-hop paths lose fidelity to each swap, so they reserve more raw pairs
+        and settle for an achievable target fidelity (default (1, 1.0) = 1-hop).
+
+        Args:
+            peer (str): name of the remote node for this session.
+        """
+        cc_delay = self._peer_cc_delay(peer)
+        t0 = int(self.tl.now() + RESERVATION_SLACK_CC_MULT * cc_delay)
+        t1 = int(t0 + TELEGATE_WINDOW_CC_MULT * cc_delay)
+        hops = self.hop_distances.get(peer, 1)
+        mem_size, fidelity = self.reservation_policy(hops)
+        return t0, t1, mem_size, fidelity, hops

@@ -1,5 +1,5 @@
-# File: central_node.py
-"""Central controller -- a real node in the network topology.
+# File: barrier.py
+"""Barrier controller -- a real node in the network topology.
 
 The controller is a :class:`~sequence.topology.node.ClassicalNode`: it exchanges
 classical messages with the DQC nodes over classical channels (so it can only
@@ -9,70 +9,40 @@ owns the compiler + scheduler and, on start, RUNS them to produce the
 broadcast a step to every node, wait for all ACKs (delivered over channels),
 advance (charging ``dt`` to telegate/teledata steps, ``local_dt`` to local-only
 steps), until the program's last step.
+
+Shared plumbing (classical-node wiring, ``compile`` / ``set_nodes``, the DQC-app
+messaging primitives) lives in :class:`~base.BaseController`; this class adds the
+lock-step barrier policy.
 """
 from __future__ import annotations
 
 import sys
 import time
 
-from sequence.topology.node import ClassicalNode
 from sequence.kernel.process import Process
 from sequence.kernel.event import Event
 from sequence.message import Message
 import sequence.utils.log as log
 
-from sequence.dqc.dqc_app import DQCMessage, DQCMsgType
+from sequence.dqc.controllers.base import BaseController
 
 
-class CentralNodeController(ClassicalNode):
+class BarrierController(BaseController):
     """Barriered step orchestrator, wired into the topology as a classical node.
 
-    Args:
-        name: controller node name (message sender label + channel key).
-        timeline: the network timeline (from ``DQCNetTopo``).
-        compiler: a compiler (``compilers`` package) -- circuit+topology -> program.
-            Either a static PipelineCompiler (partitioner + scheduler) or the
-            monolithic FGPCompiler. Run once at ``compile``.
-        dt: delay after a network (telegate/teledata) step before the next broadcast.
-        local_dt: delay after a local-only step (default ``dt``; ~0 so sim-time
-            reflects real network cost rather than a flat local-gate barrier).
+    Broadcast step N to every node, wait for ALL to ACK, then advance to N+1 --
+    until the program's last step. See :class:`~base.BaseController` for the
+    constructor arguments and shared state.
     """
 
     def __init__(self, name: str, timeline, compiler=None,
                  dt: float = 0.0, local_dt: float = None):
-        super().__init__(name, timeline)          # ClassicalNode -> registers on timeline
-        self.compiler = compiler
-        self.dt = dt
-        self.local_dt = dt if local_dt is None else local_dt
-
-        # filled by compile() / set_nodes()
-        self.program = None
-        self.max_step = -1
-        self.net_layers = set()
-        self.qnodes = []                          # DQC node objects we orchestrate
-
-        # run-time barrier state
-        self.current = 0
+        super().__init__(name, timeline, compiler=compiler, dt=dt, local_dt=local_dt)
         self.waiting = set()                      # names of nodes not yet ACKed this step
-        self._completed = False
-
-    # ── compile: run the compiler this controller owns ───────────────────────
-    def compile(self, circuit, topology, seed: int = 0):
-        """Compile ``circuit`` on ``topology`` into the full plan (CompiledProgram)."""
-        program = self.compiler.compile(circuit, topology, seed=seed)
-        self.program = program
-        self.max_step = program.max_step
-        self.net_layers = program.net_layers
-        return program
-
-    def set_nodes(self, qnodes):
-        """The DQC node objects this controller drives (must be channel-connected)."""
-        self.qnodes = list(qnodes)
-        return self
 
     # ── barrier: receive ACKs over the channel, advance when all in ──────────
     def receive_message(self, src: str, msg: Message) -> None:
-        if not isinstance(msg, DQCMessage) or msg.msg_type != DQCMsgType.ACK:
+        if not self._is_ack(msg):
             return
         if msg.step != self.current:
             return
@@ -92,9 +62,8 @@ class CentralNodeController(ClassicalNode):
                 log.logger.info("[controller] All steps completed successfully!")
                 self._completed = True
 
-    def start_execution(self):
-        """Kick off the run at step 0 (call after ``timeline.init()``)."""
-        self._t_start = time.time()
+    def _start(self):
+        """Kick off the run at step 0."""
         self._broadcast(0)
 
     def _broadcast(self, step: int):
@@ -114,7 +83,5 @@ class CentralNodeController(ClassicalNode):
 
         self.waiting = {nd.name for nd in self.qnodes}
         for nd in self.qnodes:
-            msg = DQCMessage(DQCMsgType.STEP_MESSAGE, receiver="dqc_node",
-                             step=step, node=self.name)
-            self.send_message(nd.name, msg)       # ClassicalNode: routes via channel
+            self.send_step(nd.name, step)
         log.logger.info("[controller] Broadcast step=%d to %d nodes", step, len(self.qnodes))

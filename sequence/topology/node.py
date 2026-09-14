@@ -900,23 +900,24 @@ class DQCNode(QuantumRouter):
 
     @property
     def is_noisy(self) -> bool:
-        """True if this node carries any non-ideal local (computational) noise param. A
-        computed attribute (not a stored flag) so it stays correct after the runtime stamps
-        a uniform NoiseConfig's fidelities onto the node post-construction."""
+        """True if this node carries any non-ideal local (computational) noise param.
+        Noise is per-node (set from the topology at construction); a node with all-ideal
+        params is noiseless."""
         return (self.one_qubit_gate_fid < 1.0 or self.two_qubit_gate_fid < 1.0
                 or self.measurement_fid < 1.0 or self.t1 is not None or self.t2 is not None)
 
     def register_qubits(self, qm) -> None:
         """Route this node's data + comm qubits (by qstate_key) to THIS node on the quantum
-        manager (``qm.register_qubit``), so the trajectory-noise layer reads their
-        fidelities/coherence LIVE off the node. No-op if the node is ideal, or if the
-        manager has no per-qubit noise routing (e.g. a plain formalism). The node holds the
-        values; the manager only keeps the key->node routing."""
-        if not self.is_noisy or not hasattr(qm, "register_qubit"):
+        manager's :class:`~sequence.dqc.noise.QubitRegistry` (``qm.registry``), so the
+        trajectory-noise layer reads their fidelities/coherence LIVE off the node. No-op if
+        the node is ideal, or if the manager has no such registry (e.g. a plain formalism).
+        The node holds the values; the registry only keeps the key->node routing."""
+        registry = getattr(qm, "registry", None)
+        if not self.is_noisy or registry is None:
             return
         for arr_name in (self.memo_arr_name, self.data_memo_arr_name):
             for mem in self.get_component_by_name(arr_name):
-                qm.register_qubit(mem.qstate_key, self)
+                registry.register_qubit(mem.qstate_key, self)
 
     def receive_message(self, src: str, msg: "Message") -> None:
         """Determine what to do when a message is received, based on the msg.receiver.

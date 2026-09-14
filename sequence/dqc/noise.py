@@ -3,23 +3,26 @@
 
 The base ket/density quantum managers stay exactly as-pulled (a plain ideal ket manager;
 a density manager with its own *global* noise model). The DQC noise here is added by
-SUBCLASSING them -- :class:`KetVectorNoise` extends
+SUBCLASSING them -- :class:`QuantumManagerKetNoise` extends
 :class:`~sequence.kernel.quantum_manager.ket_vector.QuantumManagerKet` and
-:class:`DensityMatrixNoise` extends
+:class:`QuantumManagerDensityNoise` extends
 :class:`~sequence.kernel.quantum_manager.density_matrix.QuantumManagerDensity`. Each
 overrides ``run_circuit`` to add PER-NODE noise (routing every qubit to its owning DQCNode
 and reading the fidelities/coherence LIVE off the node), delegating the ideal execution to
 ``super().run_circuit`` and reusing the base's state/measure/Pauli helpers.
 
-Only the APPLICATION differs: :class:`KetVectorNoise` samples a Pauli trajectory (a ket is a
-pure state), :class:`DensityMatrixNoise` applies deterministic CPTP (Kraus) channels. A qubit
+Routing is COMPOSED, not inherited: each manager holds a :class:`QubitRegistry` (``self.registry``)
+that owns both the key->node routing the noise math reads off and a global *logical qubit ->
+qstate key* map shared with the QPU agent (which owns the logical<->slot placement). A qubit
 with no registered node is ideal, so the noise path is entered only for DQC-node qubits
-(never for plain Node / QuantumRouter qubits). :class:`NoiseConfig` is the uniform
-description a caller passes to ``run()``.
+(never for plain Node / QuantumRouter qubits).
+
+Only the APPLICATION differs: :class:`QuantumManagerKetNoise` samples a Pauli trajectory (a
+ket is a pure state), :class:`QuantumManagerDensityNoise` applies deterministic CPTP (Kraus)
+channels. Noise is entirely per-node: it is declared on each DQCNode (fidelities/T1/T2); a
+node with no noise params is ideal.
 """
 from __future__ import annotations
-
-from dataclasses import dataclass
 
 import itertools
 import numpy as np
@@ -28,6 +31,8 @@ from ..constants import KET_VECTOR_FORMALISM, DENSITY_MATRIX_FORMALISM
 from ..kernel.quantum_manager import QuantumManager
 from ..kernel.quantum_manager.ket_vector import QuantumManagerKet
 from ..kernel.quantum_manager.density_matrix import QuantumManagerDensity
+from ..components.circuit import Circuit
+
 
 # Formalism ids for the noise-aware managers (base ids stay on the pristine managers).
 KET_VECTOR_NOISE_FORMALISM = "ket_vector_noise"
@@ -67,25 +72,34 @@ def dephasing_z_prob(idle_s: float, t1, t2) -> float:
     return 0.5 * (1.0 - np.exp(-idle_s / t_phi))
 
 
-class _NodeRouting:
-    """Per-qubit routing shared by both noise managers: map each qubit key to its owning
-    DQCNode and read the fidelities/coherence LIVE off the node (no global fidelity state on
-    the manager). A key with no DQC node is ideal, so the noise path is never entered for it.
-    Mix this in FIRST so ``__init__`` sets the routing before the base manager's ``__init__``.
+class QubitRegistry:
+    """Shared routing + logical-qubit registry the noise managers COMPOSE (not inherit).
+
+    Holds the two mappings the DQC noise layer needs, in one place:
+
+    * ``node_of`` -- quantum-manager key -> owning :class:`~sequence.topology.node.DQCNode`.
+      The noise math reads each qubit's fidelities/coherence LIVE off its node (no global
+      fidelity state on the manager). A key with no DQC node is ideal, so the noise path is
+      never entered for it.
+    * ``qubit_to_key`` -- DQC *global (logical) qubit index* -> its current quantum-manager
+      key. Populated/consulted by the QPU agent, which owns the logical<->slot placement, so
+      the agent and the noise layer share ONE source of truth for where a logical qubit lives
+      instead of each re-deriving it.
+
+    ``last_touched`` (key -> last sim time) backs the idle T1/T2 watermark.
     """
 
-    def _init_routing(self, seed=None) -> None:
-        # noise_rng may already exist (density base makes one); make one here for ket.
-        if not hasattr(self, "noise_rng"):
-            self.noise_rng = np.random.default_rng(seed)
+    def __init__(self) -> None:
         self.node_of: dict = {}          # key -> owning DQCNode (routing only)
         self.last_touched: dict = {}     # key -> last sim time (for idle T1/T2)
+        self.qubit_to_key: dict = {}     # global logical qubit index -> current qstate key
 
+    # ── key -> node routing (used by the noise math) ─────────────────────────
     def register_qubit(self, key: int, node) -> None:
         """Route qubit ``key`` to its owning DQCNode (values read live from the node)."""
         self.node_of[key] = node
 
-    def _fids(self, key: int) -> tuple:
+    def fids(self, key: int) -> tuple:
         """(one_qubit_gate_fid, two_qubit_gate_fid, measurement_fid) read live off the
         owning node; all-ideal if ``key`` has no DQC node."""
         node = self.node_of.get(key)
@@ -93,11 +107,11 @@ class _NodeRouting:
             return (1.0, 1.0, 1.0)
         return (node.one_qubit_gate_fid, node.two_qubit_gate_fid, node.measurement_fid)
 
-    def _noise_active(self, keys) -> bool:
+    def noise_active(self, keys) -> bool:
         """True if any of ``keys`` belongs to a registered (noisy) node."""
         return any(k in self.node_of for k in keys)
 
-    def _sim_now(self, keys):
+    def sim_now(self, keys):
         """Current sim time (ps) from a registered node's timeline, or None."""
         for k in keys:
             node = self.node_of.get(k)
@@ -105,18 +119,29 @@ class _NodeRouting:
                 return node.timeline.now()
         return None
 
+    # ── global logical qubit -> key mapping (shared with the QPU agent) ───────
+    def set_key(self, qubit: int, key: int) -> None:
+        """Record the current quantum-manager ``key`` for global logical ``qubit``."""
+        self.qubit_to_key[qubit] = key
+
+    def key_of(self, qubit: int):
+        """Current quantum-manager key for global logical ``qubit`` (None if unmapped)."""
+        return self.qubit_to_key.get(qubit)
+
 
 @QuantumManager.register(KET_VECTOR_NOISE_FORMALISM)
-class KetVectorNoise(_NodeRouting, QuantumManagerKet):
+class QuantumManagerKetNoise(QuantumManagerKet):
     """Ket manager (as-pulled) + PER-NODE trajectory noise. Overrides ``run_circuit`` to add
     idle T1/T2, per-gate sampled Paulis, and readout flips, delegating the ideal execution to
-    ``super().run_circuit``. Ideal for any qubit with no registered node."""
+    ``super().run_circuit``. Ideal for any qubit with no registered node. Routing/logical-qubit
+    state lives in the composed :class:`QubitRegistry` (``self.registry``)."""
 
     _PAULIS = ("x", "y", "z")
 
-    def __init__(self):
+    def __init__(self, seed=None):
         super().__init__()
-        self._init_routing()
+        self.noise_rng = np.random.default_rng(seed)
+        self.registry = QubitRegistry()
 
     @classmethod
     def get_active_formalism(cls):
@@ -130,9 +155,9 @@ class KetVectorNoise(_NodeRouting, QuantumManagerKet):
         """Apply a circuit. When ``inject_gate_error`` OR any of ``keys`` is on a noisy node,
         add idle T1/T2 (before), per-gate depolarizing (after), and readout flips; otherwise
         the pristine ideal path (``super().run_circuit``)."""
-        if not (inject_gate_error or self._noise_active(keys)):
+        if not (inject_gate_error or self.registry.noise_active(keys)):
             return super().run_circuit(circuit, keys, meas_samp)
-        now = self._sim_now(keys)
+        now = self.registry.sim_now(keys)
         if now is not None:
             self.apply_idling_decoherence(keys, now)
         result = super().run_circuit(circuit, keys, meas_samp)
@@ -177,15 +202,14 @@ class KetVectorNoise(_NodeRouting, QuantumManagerKet):
         """Idle T1/T2 over the time since each key was last touched (watermark in
         ``last_touched``); ``t1``/``t2`` default to the owning node's values. T1 = stochastic
         relaxation via a sanctioned measurement; T2 = stochastic Z."""
-        from ..components.circuit import Circuit
         for key in keys:
-            node = self.node_of.get(key)
+            node = self.registry.node_of.get(key)
             u1 = t1 if t1 is not None else (node.t1 if node is not None else None)
             u2 = t2 if t2 is not None else (node.t2 if node is not None else None)
             if u1 is None and u2 is None:
                 continue
-            idle_s = (now_ps - self.last_touched.get(key, now_ps)) * 1e-12
-            self.last_touched[key] = now_ps
+            idle_s = (now_ps - self.registry.last_touched.get(key, now_ps)) * 1e-12
+            self.registry.last_touched[key] = now_ps
             if idle_s <= 0:
                 continue
             if u1 is not None and self.noise_rng.random() < relaxation_prob(idle_s, u1):
@@ -200,28 +224,29 @@ class KetVectorNoise(_NodeRouting, QuantumManagerKet):
         for _name, indices, _arg in circuit.gates:
             gk = [keys[i] for i in indices]
             if len(gk) == 1:
-                f = self._fids(gk[0])[0]
+                f = self.registry.fids(gk[0])[0]
                 if f < 1.0:
                     self.apply_noise(gk, "depolarize", 1.0 - f)
             elif len(gk) == 2:
-                f = min(self._fids(gk[0])[1], self._fids(gk[1])[1])
+                f = min(self.registry.fids(gk[0])[1], self.registry.fids(gk[1])[1])
                 if f < 1.0:
                     self.apply_noise(gk, "depolarize", 1.0 - f)
 
     def _apply_readout(self, result) -> None:
         """Flip each reported bit w.p. (1 - measurement_fid) of its owning node."""
         for key in list(result):
-            f = self._fids(key)[2]
+            f = self.registry.fids(key)[2]
             if f < 1.0 and self.noise_rng.random() > f:
                 result[key] ^= 1
 
 
 @QuantumManager.register(DENSITY_MATRIX_NOISE_FORMALISM)
-class DensityMatrixNoise(_NodeRouting, QuantumManagerDensity):
+class QuantumManagerDensityNoise(QuantumManagerDensity):
     """Pristine density manager + PER-NODE CPTP noise. The base density manager is ideal, so
     ALL noise lives here: overrides ``run_circuit`` to apply idle T1/T2 and a per-gate
     depolarizing channel at each owning node's fidelity, reusing the base's ideal
-    ``_measure`` helper. Owns the Pauli-channel machinery and its ``_merge_state`` helper."""
+    ``_measure`` helper. Owns the Pauli-channel machinery and its ``_merge_state`` helper.
+    Routing/logical-qubit state lives in the composed :class:`QubitRegistry` (``self.registry``)."""
 
     # Single-qubit Pauli matrices + the alphabet each noise_type samples over.
     _PAULI = {"I": np.eye(2, dtype=complex),
@@ -232,7 +257,8 @@ class DensityMatrixNoise(_NodeRouting, QuantumManagerDensity):
 
     def __init__(self, seed: int | None = None):
         super().__init__()              # base density is ideal; no seed/fids
-        self._init_routing(seed)        # noise_rng / node_of / last_touched
+        self.noise_rng = np.random.default_rng(seed)
+        self.registry = QubitRegistry()
         self.gate_1q_count = self.gate_2q_count = 0
         self.measurement_count = self.measurement_error_count = 0
 
@@ -277,11 +303,11 @@ class DensityMatrixNoise(_NodeRouting, QuantumManagerDensity):
         from ..components.circuit import Circuit
         from ..kernel.quantum_state import DensityState
         from ..kernel.quantum_manager.utils import validate_circuit_run
-        if not (inject_gate_error or self._noise_active(keys)):
+        if not (inject_gate_error or self.registry.noise_active(keys)):
             return super().run_circuit(circuit, keys, meas_samp)
 
         validate_circuit_run(circuit, keys, meas_samp)   # same contract as the base path
-        now = self._sim_now(keys)
+        now = self.registry.sim_now(keys)
         if now is not None:
             self.apply_idling_decoherence(keys, now)
         rho, all_keys = self._merge_state(keys)
@@ -297,10 +323,10 @@ class DensityMatrixNoise(_NodeRouting, QuantumManagerDensity):
             rho = gmat @ rho @ gmat.conj().T
             if len(gate_keys) == 1:
                 self.gate_1q_count += 1
-                f = self._fids(gate_keys[0])[0]
+                f = self.registry.fids(gate_keys[0])[0]
             elif len(gate_keys) == 2:
                 self.gate_2q_count += 1
-                f = min(self._fids(gate_keys[0])[1], self._fids(gate_keys[1])[1])
+                f = min(self.registry.fids(gate_keys[0])[1], self.registry.fids(gate_keys[1])[1])
             else:
                 f = 1.0
             if f < 1.0:
@@ -314,7 +340,7 @@ class DensityMatrixNoise(_NodeRouting, QuantumManagerDensity):
         measured_keys = [keys[i] for i in circuit.measured_qubits]
         results = self._measure(rho, measured_keys, all_keys, meas_samp)
         for mk in list(results):                        # readout error, per owning node
-            f = self._fids(mk)[2]
+            f = self.registry.fids(mk)[2]
             if f < 1.0:
                 self.measurement_count += 1
                 if self.noise_rng.random() > f:
@@ -326,13 +352,13 @@ class DensityMatrixNoise(_NodeRouting, QuantumManagerDensity):
         """Idle T1/T2 over the time since each key was last touched; ``t1``/``t2`` default to
         the owning node's values. T1 = amplitude-damping channel; T2 = Z channel."""
         for key in keys:
-            node = self.node_of.get(key)
+            node = self.registry.node_of.get(key)
             u1 = t1 if t1 is not None else (node.t1 if node is not None else None)
             u2 = t2 if t2 is not None else (node.t2 if node is not None else None)
             if u1 is None and u2 is None:
                 continue
-            idle_s = (now_ps - self.last_touched.get(key, now_ps)) * 1e-12
-            self.last_touched[key] = now_ps
+            idle_s = (now_ps - self.registry.last_touched.get(key, now_ps)) * 1e-12
+            self.registry.last_touched[key] = now_ps
             if idle_s <= 0:
                 continue
             rho, all_keys = self._merge_state([key])
@@ -471,23 +497,3 @@ class DensityMatrixNoise(_NodeRouting, QuantumManagerDensity):
         return {"gate_1q_count": self.gate_1q_count, "gate_2q_count": self.gate_2q_count,
                 "measurement_count": self.measurement_count,
                 "measurement_error_count": self.measurement_error_count}
-
-
-@dataclass
-class NoiseConfig:
-    """Uniform (global) noise description passed to ``run()``. The runtime stamps these
-    fidelities onto every otherwise-ideal node (per-node ``node_noise`` overrides them).
-
-    one_qubit_gate_fid/two_qubit_gate_fid : 1-/2-qubit gate fidelity.
-    measurement_fid       : measurement/readout fidelity.
-    t1, t2    : amplitude-damping (T1) and dephasing (T2) times in SECONDS (None = off).
-    """
-    one_qubit_gate_fid: float = 1.0
-    two_qubit_gate_fid: float = 1.0
-    measurement_fid: float = 1.0
-    t1: float = None
-    t2: float = None
-
-    def is_noiseless(self) -> bool:
-        return (self.one_qubit_gate_fid >= 1.0 and self.two_qubit_gate_fid >= 1.0
-                and self.measurement_fid >= 1.0 and self.t1 is None and self.t2 is None)

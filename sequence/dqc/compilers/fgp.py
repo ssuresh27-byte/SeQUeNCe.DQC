@@ -3,8 +3,10 @@
 
 The literature hybrid telegate + teledata compiler (Baker, Duckering, Hoffman,
 Chong, "Time-sliced quantum circuit partitioning for modular architectures",
-ACM Computing Frontiers 2020 -- FGP-rOEE). Unlike the static two-stage
-:class:`~compilers.pipeline.PipelineCompiler`, this is MONOLITHIC: it chooses a
+ACM Computing Frontiers 2020 -- FGP-rOEE): 
+https://dl.acm.org/doi/pdf/10.1145/3387902.3392617
+Unlike the static two-stage
+:class:`~compilers.basic.BasicCompiler`, this is MONOLITHIC: it chooses a
 qubit->module assignment PER TIME SLICE (rOEE local search over a lookahead-
 weighted cut, capacity-bound). Between slices a qubit whose module changed is
 teleported (a teledata "move"); residual cross-module gates within a slice fall

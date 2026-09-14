@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""PipelineCompiler: the classic two-stage static compiler = partitioner + scheduler."""
+"""BasicCompiler: the classic two-stage static compiler = partitioner + scheduler."""
 from sequence.dqc.compilers.base import CompilerBase
 from sequence.dqc.partitioners import get_partitioner
 from sequence.dqc.schedulers import get_scheduler
 from sequence.dqc.program import build_program
 
 
-class PipelineCompiler(CompilerBase):
+class BasicCompiler(CompilerBase):
     """Compose a placement PARTITIONER and a SCHEDULER into one compiler.
 
     ``compile`` = partition the qubits onto the topology, then schedule the circuit

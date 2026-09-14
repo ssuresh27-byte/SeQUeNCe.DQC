@@ -1,7 +1,7 @@
 # File: adaptive_central_node.py
 """An ADAPTIVE (dataflow) controller -- an alternative to the lock-step barrier.
 
-Where :class:`central_node.CentralNodeController` replays a fixed plan one global
+Where :class:`barrier.BarrierController` replays a fixed plan one global
 step at a time (broadcast step N to everyone, wait for ALL to ACK, then N+1), this
 controller executes the SAME CompiledProgram as a **dataflow graph**: it dispatches
 each step as soon as its data dependencies are satisfied, to only the nodes that
@@ -26,42 +26,22 @@ import sys
 import time
 from collections import defaultdict
 
-from sequence.topology.node import ClassicalNode
 from sequence.message import Message
 import sequence.utils.log as log
 
-from sequence.dqc.dqc_app import DQCMessage, DQCMsgType
+from sequence.dqc.controllers.base import BaseController
 
 
-class AdaptiveController(ClassicalNode):
-    """Dataflow controller: dispatch each step when its deps clear; many in flight."""
+class AdaptiveController(BaseController):
+    """Dataflow controller: dispatch each step when its deps clear; many in flight.
 
-    def __init__(self, name: str, timeline, compiler=None, dt: float = 0.0, local_dt: float = None):
-        super().__init__(name, timeline)
-        self.compiler = compiler
-        self.dt = dt
-        self.local_dt = dt if local_dt is None else local_dt
-        self.qnodes = []
-        self.program = None
-        self.max_step = -1
-        self.net_layers = set()
-        self.current = 0          # highest completed step + 1 (for the ok/reached check)
-        self._completed = False
+    Executes the same CompiledProgram as :class:`~barrier.BarrierController`
+    but as a dependency DAG rather than a lock-step barrier. See
+    :class:`~base.BaseController` for the constructor arguments and shared state.
+    """
 
-    # ── compile (same as the barrier controller) ─────────────────────────────
-    def compile(self, circuit, topology, seed: int = 0):
-        self.program = self.compiler.compile(circuit, topology, seed=seed)
-        self.max_step = self.program.max_step
-        self.net_layers = self.program.net_layers
-        self._build_dag()
-        return self.program
-
-    def set_nodes(self, qnodes):
-        self.qnodes = list(qnodes)
-        return self
-
-    # ── build the per-step dependency DAG ────────────────────────────────────
-    def _build_dag(self):
+    # ── build the per-step dependency DAG (run after compile) ─────────────────
+    def _on_compiled(self):
         node_ops = self.program.node_ops
         self.participants = defaultdict(set)   # step -> node names with an op there
         self.is_net = defaultdict(bool)        # step -> touches the network?
@@ -99,8 +79,7 @@ class AdaptiveController(ClassicalNode):
         self.net_busy = set()                  # nodes currently running a network step
 
     # ── run ──────────────────────────────────────────────────────────────────
-    def start_execution(self):
-        self._t_start = time.time()
+    def _start(self):
         self._dispatch_ready()
 
     def _dispatch_ready(self):
@@ -122,14 +101,13 @@ class AdaptiveController(ClassicalNode):
         if self.is_net[step]:
             self.net_busy |= self.participants[step]
         for nm in self.participants[step]:
-            msg = DQCMessage(DQCMsgType.STEP_MESSAGE, receiver="dqc_node", step=step, node=self.name)
-            self.send_message(nm, msg)         # over the classical channel
+            self.send_step(nm, step)           # over the classical channel
         log.logger.info("[adaptive] dispatch step=%d to %s (in flight: %d)",
                         step, sorted(self.participants[step]), len(self.inflight))
         self._progress()
 
     def receive_message(self, src: str, msg: Message) -> None:
-        if not isinstance(msg, DQCMessage) or msg.msg_type != DQCMsgType.ACK:
+        if not self._is_ack(msg):
             return
         s = msg.step
         if s not in self.inflight:
