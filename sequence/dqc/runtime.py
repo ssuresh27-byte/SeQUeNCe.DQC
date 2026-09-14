@@ -28,10 +28,7 @@ import sequence.dqc.dqc_program as _da
 from sequence.topology.dqc_net_topo import DQCNetTopo
 from sequence.components.circuit import Circuit
 
-import sequence.dqc.architecture as _topo
 from sequence.dqc.compilers import build_compiler
-from sequence.dqc.controllers.barrier import BarrierController
-from sequence.dqc.controllers.adaptive_central_node import AdaptiveController
 from sequence.dqc.dqc_program import TeleportationDQCProgram
 from sequence.constants import KET_VECTOR_FORMALISM, DENSITY_MATRIX_FORMALISM
 from sequence.dqc.noise import KET_VECTOR_NOISE_FORMALISM, DENSITY_MATRIX_NOISE_FORMALISM
@@ -46,8 +43,6 @@ _FORMALISMS = {
     ("density", False): DENSITY_MATRIX_FORMALISM,
     ("density", True): DENSITY_MATRIX_NOISE_FORMALISM,
 }
-
-CONTROLLERS = {"barrier": BarrierController, "adaptive": AdaptiveController}
 
 STOP_BUDGET = 2e9   # per-step physical budget for sizing tl.stop_time
 
@@ -139,6 +134,10 @@ def run(circuit, topology, partitioner="topo-aware", scheduler="fgp", seed=0,
     def _one_shot(shot_rng, noise_seed):
         # Generous memory so the controller can compile AFTER the net is built:
         # data memory holds every qubit slot (FGP slot==qubit-id); comm pool >> load.
+        # The controller (policy + named compiler) is declared in the config and BUILT by
+        # DQCNetTopo; a custom compiler OBJECT is injected below to override the built one.
+        topology.controller_policy = controller
+        topology.compiler_spec = {"partitioner": partitioner, "scheduler": scheduler}
         config = topology.sim_config()
         # Select the state formalism (ket / density) and its noise variant when noise is active.
         config["formalism"] = _FORMALISMS[(formalism, noise_active)]
@@ -161,9 +160,9 @@ def run(circuit, topology, partitioner="topo-aware", scheduler="fgp", seed=0,
                 for nd in qn.values():
                     nd.register_qubits(qm)
                 qm.noise_rng = np.random.default_rng(noise_seed)
-            _compiler = compiler if compiler is not None else build_compiler(partitioner, scheduler)
-            ctrl = CONTROLLERS[controller]("controller", tl, compiler=_compiler)
-            _topo.wire_controller(net, ctrl)
+            ctrl = net.controller                       # built + wired by DQCNetTopo from config
+            if compiler is not None:                    # custom compiler object overrides the named one
+                ctrl.compiler = compiler
             program = ctrl.compile(circuit, topology, seed=seed)   # runs the compiler
             metrics = _program_metrics(program, topology)
             _da.RESERVATION_SLACK_CC_MULT = 6 * max(metrics[2], 1)

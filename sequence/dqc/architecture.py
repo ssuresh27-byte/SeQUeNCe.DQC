@@ -75,6 +75,11 @@ class DQCArchitecture:
         self.node_noise = {nm: dict(p) for nm, p in (node_noise or {}).items()}
         self.link_km = 5.0          # physical fibre length per hop (settable to sweep)
         self.mem_efficiency = 0.9   # memory (Bell-pair) efficiency (settable to sweep)
+        # Central controller declared inline in the sim config so DQCNetTopo builds+wires it:
+        # its scheduling policy and (named) compiler choice. A custom compiler OBJECT can't
+        # live in JSON -- pass it to run() to override the built one.
+        self.controller_policy = "barrier"                                  # "barrier" | "adaptive"
+        self.compiler_spec = {"partitioner": "topo-aware", "scheduler": "fgp"}
         self._rebuild_graph()
 
     @property
@@ -231,6 +236,15 @@ class DQCArchitecture:
             for b in self.node_names:
                 if a != b:
                     cch.append({"source": a, "destination": b, "delay": delay})
+        # Central controller: a real node DQCNetTopo builds (by policy) with its (named)
+        # compiler, wired to every DQC node by classical channels. A small control-plane
+        # delay keeps the barrier round-trip from dominating the reported sim time.
+        ctrl_delay = 1
+        nodes.append({"name": "controller", "type": "Controller", "seed": seed,
+                      "policy": self.controller_policy, "compiler": dict(self.compiler_spec)})
+        for nm in self.node_names:
+            cch.append({"source": "controller", "destination": nm, "delay": ctrl_delay})
+            cch.append({"source": nm, "destination": "controller", "delay": ctrl_delay})
         return {"templates": {"teleportation": {"MemoryArray": {"fidelity": 1,
                                                                 "efficiency": self.mem_efficiency}}},
                 "nodes": nodes, "qchannels": qch, "cchannels": cch,
@@ -282,27 +296,3 @@ def make_caveman(caves: int, size: int, cap: int, comm_memo: int = 16, node_nois
         edges.append((names[c * size + size - 1], names[(c + 1) * size]))
     return DQCArchitecture(f"caveman{caves}x{size}_cap{cap}", {nm: cap for nm in names}, edges,
                        comm_memo, node_noise)
-
-
-# ── attach the central controller as a real node in a built network ──────────
-def wire_controller(net, controller, delay: int = 1):
-    """Wire a controller node into a built ``DQCNetTopo`` network.
-
-    Creates bidirectional classical channels between ``controller`` and EVERY DQC
-    node, so the controller can only exchange messages with nodes it is connected to
-    (here, all of them), and registers those nodes on the controller. The controller
-    must already be a :class:`~sequence.topology.node.ClassicalNode` created on
-    ``net.tl``. ``delay`` (ps) is the per-hop control-channel latency; keep it small so
-    the barrier round-trip doesn't dominate the reported sim time.
-    """
-    from sequence.topology.dqc_net_topo import DQCNetTopo
-    from sequence.components.optical_channel import ClassicalChannel
-    tl = net.tl
-    dqc_nodes = list(net.nodes[DQCNetTopo.DQC_NODE])
-    for nd in dqc_nodes:
-        c_out = ClassicalChannel(f"cc_{controller.name}_{nd.name}", tl, 0, delay=delay)
-        c_out.set_ends(controller, nd.name)        # controller -> node
-        c_in = ClassicalChannel(f"cc_{nd.name}_{controller.name}", tl, 0, delay=delay)
-        c_in.set_ends(nd, controller.name)         # node -> controller
-    controller.set_nodes(dqc_nodes)
-    return controller

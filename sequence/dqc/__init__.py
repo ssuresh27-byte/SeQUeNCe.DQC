@@ -14,7 +14,6 @@ from .architecture import (
     make_star,
     make_grid,
     make_caveman,
-    wire_controller,
 )
 
 __all__ = [
@@ -25,5 +24,4 @@ __all__ = [
     "make_star",
     "make_grid",
     "make_caveman",
-    "wire_controller",
 ]

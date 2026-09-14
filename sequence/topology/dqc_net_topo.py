@@ -33,6 +33,7 @@ class DQCNetTopo(Topo):
     def __init__(self, config_source: str | dict):
         self.bsm_to_router_map = {}
         self.encoding_type = None
+        self.controller = None            # set by _add_nodes if the config declares one
         super().__init__(config_source)
 
     def _load(self, config_source: str | dict):
@@ -48,6 +49,13 @@ class DQCNetTopo(Topo):
         self._add_cchannels(config)
         self._add_cconnections(config)
         self._generate_forwarding_table(config)
+        self._wire_controller()
+
+    def _wire_controller(self):
+        """Register the DQC nodes on the controller (its classical channels to them are
+        already built from the config's cchannels). No-op if no controller was declared."""
+        if self.controller is not None:
+            self.controller.set_nodes(self.nodes[self.DQC_NODE])
 
     def _add_timeline(self, config: dict):
         stop_time = config.get(Topo.STOP_TIME, float('inf'))
@@ -84,11 +92,33 @@ class DQCNetTopo(Topo):
                                    two_qubit_gate_fid=node.get("two_qubit_gate_fid", 1.0),
                                    measurement_fid=node.get("measurement_fid", 1.0),
                                    t1=node.get("t1"), t2=node.get("t2"))
+            elif node_type == self.CONTROLLER:
+                node_obj = self._build_controller(node)
+                self.controller = node_obj
             else:
                 raise ValueError(f"Unknown type of node '{node_type}'")
 
             node_obj.set_seed(seed)
             self.nodes[node_type].append(node_obj)
+
+    def _build_controller(self, node: dict):
+        """Build the central controller from its config entry (policy + named compiler).
+
+        Lazy-imports the DQC controllers/compilers so the topology package doesn't take a
+        module-level dependency on :mod:`sequence.dqc`. A custom compiler OBJECT can't be
+        expressed in the JSON config; pass it to the runtime to override the built one.
+        """
+        from sequence.dqc.controllers.barrier import BarrierController
+        from sequence.dqc.controllers.adaptive_central_node import AdaptiveController
+        from sequence.dqc.compilers import build_compiler
+        policies = {"barrier": BarrierController, "adaptive": AdaptiveController}
+        policy = node.get("policy", "barrier")
+        if policy not in policies:
+            raise ValueError(f"Unknown controller policy '{policy}' (use {list(policies)})")
+        spec = node.get("compiler", {}) or {}
+        compiler = build_compiler(spec.get("partitioner", "topo-aware"),
+                                  spec.get("scheduler", "fgp"))
+        return policies[policy](node[Topo.NAME], self.tl, compiler=compiler)
 
     def _add_bsm_node_to_router(self):
         for bsm in self.bsm_to_router_map:
