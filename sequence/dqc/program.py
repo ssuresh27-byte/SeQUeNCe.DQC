@@ -9,8 +9,45 @@ controller drives its barrier with.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Set
+
+
+@dataclass
+class Op:
+    """One logical operation in the compiled DAG.
+
+    ``kind`` is ``"local"`` (single-node gate), ``"remote"`` (cross-node two-qubit gate,
+    realized as a telegate), or ``"move"`` (teledata relocation). ``qubits`` are global
+    logical indices; ``nodes`` is the owning node(s) at compile time (informational -- the
+    live logical->physical map lives on the controller, not on the op).
+    """
+    id: int
+    kind: str
+    qubits: List[int]
+    gate: str = None
+    arg: float = None
+    nodes: List[str] = None
+    dest: str = None            # move only: destination node
+    layer: int = 0              # compile-time ASAP layer (barrier may re-derive)
+
+
+@dataclass
+class OpDAG:
+    """Op-level data-dependency DAG.
+
+    ``ops`` maps id -> :class:`Op`; ``preds``/``succ`` are the dependency edges recovered
+    from qubit reuse (an op depends on the most recent earlier op touching a shared qubit).
+    A controller executes this directly: the barrier layers it (ASAP) into global waves,
+    the adaptive path walks it by dependency.
+    """
+    ops: Dict[int, Op]
+    preds: Dict[int, set]
+    succ: Dict[int, set]
+
+    def roots(self) -> List[int]:
+        """Ids with no predecessors (ready to run first)."""
+        return [i for i, p in self.preds.items() if not p]
 
 
 @dataclass
@@ -22,6 +59,7 @@ class CompiledProgram:
     node_ops: Dict[str, Dict[str, List]]
     max_step: int
     net_layers: Set[int]
+    dag: OpDAG = None           # op-level DAG (built from node_ops; see build_op_dag)
 
 
 def summarize(node_ops: Dict[str, Dict[str, List]]):
@@ -35,13 +73,54 @@ def summarize(node_ops: Dict[str, Dict[str, List]]):
     return max_step, net_layers
 
 
+def build_op_dag(node_ops: Dict[str, Dict[str, List]]) -> OpDAG:
+    """Derive the op-level dependency DAG from per-node op buckets.
+
+    Dedups the ops the buckets record on more than one node (a remote gate lives on both
+    parties; a move on both source and dest), orders them by their ASAP ``layer``, and
+    links each op to the most recent earlier op touching a shared qubit. This is the same
+    per-qubit dependency the adaptive controller recovers today, lifted to op granularity
+    so it can be a first-class program artifact.
+    """
+    uniq: dict = {}   # dedup key -> (kind, op_dict, qubits)
+    for nm, grp in node_ops.items():
+        for op in grp.get("local", []):
+            uniq[(op["layer"], nm, tuple(op["targets"]), op["gate"])] = ("local", op, list(op["targets"]))
+        for op in grp.get("remote", []):
+            uniq[(op["layer"], tuple(sorted(op["targets"])))] = ("remote", op, list(op["targets"]))
+        for op in grp.get("move", []):
+            uniq[(op["layer"], op["qubit"], op["src"], op["dest"])] = ("move", op, [op["qubit"]])
+
+    entries = sorted(uniq.values(), key=lambda e: e[1]["layer"])   # topological by ASAP layer
+    ops: Dict[int, Op] = {}
+    order: List[tuple] = []
+    for i, (kind, op, qubits) in enumerate(entries):
+        ops[i] = Op(id=i, kind=kind, qubits=qubits, gate=op.get("gate"), arg=op.get("arg"),
+                    nodes=op.get("nodes"), dest=op.get("dest"), layer=op["layer"])
+        order.append((i, qubits))
+
+    preds = {i: set() for i in ops}
+    last: dict = {}                       # qubit -> most recent op id touching it
+    for i, qubits in order:
+        for q in qubits:
+            if q in last:
+                preds[i].add(last[q])
+        for q in qubits:
+            last[q] = i
+    succ = {i: set() for i in ops}
+    for i, ps in preds.items():
+        for p in ps:
+            succ[p].add(i)
+    return OpDAG(ops, preds, succ)
+
+
 def build_program(circuit, placement: Dict[int, str],
                   data_owners: Dict[str, Dict[int, int]],
                   node_ops: Dict[str, Dict[str, List]]) -> CompiledProgram:
     """Assemble a CompiledProgram from a placement + slot map + op buckets."""
     max_step, net_layers = summarize(node_ops)
     return CompiledProgram(circuit, dict(placement), data_owners, node_ops,
-                           max_step, net_layers)
+                           max_step, net_layers, build_op_dag(node_ops))
 
 
 def stream_to_node_ops(stream, node_names, qubit_to_node):
