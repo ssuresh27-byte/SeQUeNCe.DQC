@@ -1,6 +1,6 @@
 import json
 import numpy as np
-from networkx import Graph, dijkstra_path, exception
+from networkx import Graph, dijkstra_path, exception, all_pairs_shortest_path_length
 
 from .topology import Topology as Topo
 from ..kernel.timeline import Timeline
@@ -34,6 +34,8 @@ class DQCNetTopo(Topo):
         self.bsm_to_router_map = {}
         self.encoding_type = None
         self.controller = None            # set by _add_nodes if the config declares one
+        self._capacities = {}             # DQC node name -> logical data-qubit capacity
+        self._apsp = None                 # cached all-pairs hop distances (lazy)
         super().__init__(config_source)
 
     def _load(self, config_source: str | dict):
@@ -92,6 +94,9 @@ class DQCNetTopo(Topo):
                                    two_qubit_gate_fid=node.get("two_qubit_gate_fid", 1.0),
                                    measurement_fid=node.get("measurement_fid", 1.0),
                                    t1=node.get("t1"), t2=node.get("t2"))
+                # logical data-qubit capacity the compiler partitions against (distinct
+                # from data_memo_size, the physical allocation the runtime may bump)
+                self._capacities[name] = node.get("capacity", data_size)
             elif node_type == self.CONTROLLER:
                 node_obj = self._build_controller(node)
                 self.controller = node_obj
@@ -277,4 +282,45 @@ class DQCNetTopo(Topo):
         return self.tl
 
     def get_nodes(self) -> dict[str, list[Node]]:
-        return self.nodes  
+        return self.nodes
+
+    # ── compiler-facing topology queries (this network is the source of truth) ──
+    @property
+    def node_names(self) -> list[str]:
+        """Names of the DQC (compute) nodes, in build order."""
+        return [nd.name for nd in self.nodes[self.DQC_NODE]]
+
+    @property
+    def capacities(self) -> dict[str, int]:
+        """{DQC node name: logical data-qubit capacity} the compiler partitions against."""
+        return dict(self._capacities)
+
+    @property
+    def edges(self) -> list[tuple[str, str]]:
+        """Physical DQC-DQC links (the two routers each BSM node joins)."""
+        es = set()
+        for members in self.bsm_to_router_map.values():
+            for i in range(len(members)):
+                for j in range(i + 1, len(members)):
+                    es.add(tuple(sorted((members[i], members[j]))))
+        return sorted(es)
+
+    def hop(self, a: str, b: str) -> int:
+        """Physical hop-distance between two DQC nodes (large if unreachable)."""
+        if a == b:
+            return 0
+        return self._hop_distances().get(a, {}).get(b, 10 ** 6)
+
+    def hop_distances(self) -> dict[str, dict[str, int]]:
+        """{node: {peer: hops}} for every ordered pair of distinct DQC nodes."""
+        return {u: {v: self.hop(u, v) for v in self.node_names if v != u}
+                for u in self.node_names}
+
+    def _hop_distances(self) -> dict:
+        """Cached all-pairs shortest-path lengths over the DQC-DQC edge graph."""
+        if self._apsp is None:
+            g = Graph()
+            g.add_nodes_from(self.node_names)
+            g.add_edges_from(self.edges)
+            self._apsp = dict(all_pairs_shortest_path_length(g))
+        return self._apsp

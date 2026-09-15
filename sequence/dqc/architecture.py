@@ -211,9 +211,13 @@ class DQCArchitecture:
         hardware capacity; per-node noise appears inline on each DQCNode entry.
         """
         comm = self.comm_memo if comm_memo is None else comm_memo
+        # "capacity" is the LOGICAL data-qubit capacity the compiler partitions against;
+        # "data_memo_size" is the PHYSICAL memory allocation (the runtime may bump it to
+        # hold every qubit slot). DQCNetTopo reads "capacity" for its compiler-facing API.
         nodes = [{"name": nm, "type": "DQCNode", "seed": i + 1,
                   "memo_size": max(comm, self.capacities[nm] + 4),
                   "data_memo_size": max(1, self.capacities[nm]),
+                  "capacity": self.capacities[nm],
                   "group": 0, "template": "teleportation",
                   **{k: v for k, v in self.node_noise.get(nm, {}).items()
                      if k in self.NOISE_KEYS}}
