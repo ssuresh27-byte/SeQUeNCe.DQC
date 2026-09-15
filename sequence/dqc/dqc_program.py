@@ -510,10 +510,12 @@ class TeleportationDQCProgram(DQCProgram):
         ctrl_q, tgt_q = qs
         peer = self.qubit_to_node[tgt_q]
         if self.node.name == self.qubit_to_node[ctrl_q]:
+            self.node.bind_app_peer(peer, self.tgate)   # telegate reservation callbacks -> tgate
             self._defer(step)
             self._start_telegate_control(op, ctrl_q, self._local_slot(ctrl_q), peer, tgt_q, step=step)
             return True
         if self.node.name == peer:
+            self.node.bind_app_peer(self.qubit_to_node[ctrl_q], self.tgate)   # incoming from the control node
             self._lock_target_slot(tgt_q, step)
             self._defer(step)
             return True
@@ -579,10 +581,12 @@ class TeleportationDQCProgram(DQCProgram):
         """
         q, dest, dest_slot = op["qubit"], op["dest"], op["dest_slot"]
         if self.node.name == self.qubit_to_node[q]:
+            self.node.bind_app_peer(dest, self.tdata)   # teledata reservation callbacks -> tdata
             self._defer(step)
             self._start_teleport_source(q, self._local_slot(q), dest, dest_slot, step=step)
             return True
         if self.node.name == dest:
+            self.node.bind_app_peer(self.qubit_to_node[q], self.tdata)   # incoming from the source node
             self._expected_moves[dest_slot] = (step, q)
             self._defer(step)
             return True

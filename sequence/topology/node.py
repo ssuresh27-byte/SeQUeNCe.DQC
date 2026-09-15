@@ -452,8 +452,7 @@ class QuantumRouter(Node):
         self.app = app
 
     def reserve_net_resource(self, responder: str, start_time: int, end_time: int, memory_size: int,
-                             target_fidelity: float, entanglement_number: int = 1, identity: int = 0,
-                             app_label: str = "") -> None:
+                             target_fidelity: float, entanglement_number: int = 1, identity: int = 0) -> None:
         """Method to request a reservation.
 
         Can be used by local applications.
@@ -466,11 +465,9 @@ class QuantumRouter(Node):
             target_fidelity (float): desired fidelity of entanglement.
             entanglement_number (int): the number of entanglement that the request ask for (default 1).
             identity (int): the ID of the request (default 0).
-            app_label (str): app-layer tag stored on the reservation for callback routing
-                (lets a node hosting several apps, e.g. telegate + teledata, route callbacks).
         """
         self.network_manager.request(responder, start_time, end_time, memory_size, target_fidelity,
-                                     entanglement_number, identity, app_label=app_label)
+                                     entanglement_number, identity)
 
     def get_idle_memory(self, info: "MemoryInfo") -> None:
         """Method for application to receive available memories.
@@ -905,6 +902,7 @@ class DQCNode(Node):
         # ── multi-app hosting (native): a registry of apps, not a single self.app slot ──
         self.apps: list = []            # registered apps; callbacks route to the owning one
         self.app = None                 # most-recently registered app (legacy single-app read)
+        self._app_by_peer: dict = {}    # peer node name -> app handling that session (see bind_app_peer)
 
         # per-node local (computational) noise parameters (same names as the density manager)
         self.one_qubit_gate_fid = one_qubit_gate_fid
@@ -980,18 +978,15 @@ class DQCNode(Node):
         self.resource_manager.memory_expire(memory)
 
     def reserve_net_resource(self, responder: str, start_time: int, end_time: int, memory_size: int,
-                             target_fidelity: float, entanglement_number: int = 1, identity: int = 0,
-                             app_label: str = "") -> None:
-        """Request an entanglement reservation via the network manager. ``app_label`` tags the
-        reservation so this node's app registry can route its callbacks to the owning app."""
+                             target_fidelity: float, entanglement_number: int = 1, identity: int = 0) -> None:
+        """Request an entanglement reservation via the network manager."""
         self.network_manager.request(responder, start_time, end_time, memory_size, target_fidelity,
-                                     entanglement_number, identity, app_label=app_label)
+                                     entanglement_number, identity)
 
     # ── multi-app hosting: register apps and route callbacks to the owning one ──
     def set_app(self, app: "App"):
         """Register ``app`` on this node. Unlike ``QuantumRouter``'s single slot, several apps
-        can coexist; ``self.app`` still tracks the most recent for any legacy single-app read.
-        (Apps set their ``name`` after this runs, so routing resolves names at callback time.)"""
+        can coexist; ``self.app`` still tracks the most recent for any legacy single-app read."""
         if app not in self.apps:
             self.apps.append(app)
         self.app = app
@@ -999,6 +994,17 @@ class DQCNode(Node):
     def add_app(self, app: "App"):
         """Alias of :meth:`set_app` reading as 'register another app'."""
         self.set_app(app)
+
+    def bind_app_peer(self, peer: str, app: "App") -> None:
+        """Route reservation callbacks involving ``peer`` to ``app``.
+
+        A session's two endpoints are set up (by the controller's step) before the reservation
+        travels: each side calls this with the OTHER node so the reservation -- which carries its
+        ``initiator`` and ``responder`` -- routes to the right app with no wire-side tag. (The
+        current model runs at most one network op per node at a time, so keying by peer is
+        unambiguous; per-op ids would be needed for several concurrent sessions to one peer.)
+        """
+        self._app_by_peer[peer] = app
 
     def get_idle_memory(self, info: "MemoryInfo") -> None:
         """Route an idle/entangled memory to the app that owns its index."""
@@ -1008,30 +1014,16 @@ class DQCNode(Node):
                 return
 
     def get_reservation_result(self, reservation: "Reservation", result: bool) -> None:
-        """Route a reservation result (initiator side) to its owning app."""
-        app = self._route_app(reservation)
+        """Route a reservation result (initiator side) to the app bound to the responder peer."""
+        app = self._app_by_peer.get(reservation.responder) or (self.apps[0] if self.apps else None)
         if app is not None:
             app.get_reservation_result(reservation, result)
 
     def get_other_reservation(self, reservation: "Reservation") -> None:
-        """Route an incoming reservation (responder side) to its owning app."""
-        app = self._route_app(reservation)
+        """Route an incoming reservation (responder side) to the app bound to the initiator peer."""
+        app = self._app_by_peer.get(reservation.initiator) or (self.apps[0] if self.apps else None)
         if app is not None:
             app.get_other_reservation(reservation)
-
-    def _route_app(self, reservation):
-        """The app owning ``reservation``, by its ``app_label`` (the app's name). Both endpoints
-        of a session name their app identically, so the initiator's tag routes to the responder's
-        counterpart. Falls back to a substring match, then the sole app."""
-        label = getattr(reservation, "app_label", "") or ""
-        for app in self.apps:
-            if getattr(app, "name", None) == label:
-                return app
-        for app in self.apps:
-            name = getattr(app, "name", "")
-            if name and name in label:
-                return app
-        return self.apps[0] if self.apps else None
 
     @property
     def is_noisy(self) -> bool:

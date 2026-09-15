@@ -98,7 +98,7 @@ class RSVPProtocol(StackProtocol):
         self._identity_counter = 0
 
     def push(self, responder: str, start_time: int, end_time: int, memory_size: int, target_fidelity: float,
-             entanglement_number: int = 1, identity: int = 0, app_label: str = ""):
+             entanglement_number: int = 1, identity: int = 0):
         """Method to receive reservation requests from higher level protocol.
 
         Will evaluate the request and determine if the node can meet it.
@@ -121,7 +121,7 @@ class RSVPProtocol(StackProtocol):
             self._identity_counter += 1
             identity = self._identity_counter
         reservation = Reservation(self.owner.name, responder, start_time, end_time, memory_size, target_fidelity,
-                                  entanglement_number, identity, app_label=app_label)
+                                  entanglement_number, identity)
         if self.schedule(reservation):
             msg = RSVPMessage(RSVPMsgType.REQUEST, self.name, reservation)
             qcap = QCap(self.owner.name)
