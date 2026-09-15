@@ -82,21 +82,33 @@ def build_op_dag(node_ops: Dict[str, Dict[str, List]]) -> OpDAG:
     per-qubit dependency the adaptive controller recovers today, lifted to op granularity
     so it can be a first-class program artifact.
     """
-    uniq: dict = {}   # dedup key -> (kind, op_dict, qubits)
+    # One Op per dedup key. A remote/move op is recorded on BOTH parties, so collect every
+    # source dict per key -- each gets tagged with the resulting op id so the worker can
+    # reference an op individually (e.g. for per-op ACKs).
+    meta: dict = {}          # dedup key -> (kind, representative op dict, qubits)
+    dicts_by_key: dict = {}  # dedup key -> [source op dict, ...]
     for nm, grp in node_ops.items():
         for op in grp.get("local", []):
-            uniq[(op["layer"], nm, tuple(op["targets"]), op["gate"])] = ("local", op, list(op["targets"]))
+            key = (op["layer"], nm, tuple(op["targets"]), op["gate"])
+            meta[key] = ("local", op, list(op["targets"]))
+            dicts_by_key.setdefault(key, []).append(op)
         for op in grp.get("remote", []):
-            uniq[(op["layer"], tuple(sorted(op["targets"])))] = ("remote", op, list(op["targets"]))
+            key = (op["layer"], tuple(sorted(op["targets"])))
+            meta[key] = ("remote", op, list(op["targets"]))
+            dicts_by_key.setdefault(key, []).append(op)
         for op in grp.get("move", []):
-            uniq[(op["layer"], op["qubit"], op["src"], op["dest"])] = ("move", op, [op["qubit"]])
+            key = (op["layer"], op["qubit"], op["src"], op["dest"])
+            meta[key] = ("move", op, [op["qubit"]])
+            dicts_by_key.setdefault(key, []).append(op)
 
-    entries = sorted(uniq.values(), key=lambda e: e[1]["layer"])   # topological by ASAP layer
+    entries = sorted(meta.items(), key=lambda kv: kv[1][1]["layer"])   # topological by ASAP layer
     ops: Dict[int, Op] = {}
     order: List[tuple] = []
-    for i, (kind, op, qubits) in enumerate(entries):
+    for i, (key, (kind, op, qubits)) in enumerate(entries):
         ops[i] = Op(id=i, kind=kind, qubits=qubits, gate=op.get("gate"), arg=op.get("arg"),
                     nodes=op.get("nodes"), dest=op.get("dest"), layer=op["layer"])
+        for d in dicts_by_key.get(key, []):
+            d["op_id"] = i                     # tag every source op dict with its DAG op id
         order.append((i, qubits))
 
     preds = {i: set() for i in ops}
