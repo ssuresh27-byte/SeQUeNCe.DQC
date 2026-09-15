@@ -42,21 +42,18 @@ class AdaptiveController(BaseController):
 
     # ── build the per-step dependency DAG (run after compile) ─────────────────
     def _on_compiled(self):
-        node_ops = self.program.node_ops
+        # Source the per-step structure from the program's first-class op-DAG (each op carries
+        # its ASAP layer, qubits, kind, and owning nodes) rather than re-deriving it from the
+        # per-node op buckets. The finer per-op dependencies collapse to per-step edges below.
         self.participants = defaultdict(set)   # step -> node names with an op there
         self.is_net = defaultdict(bool)        # step -> touches the network?
         step_qubits = defaultdict(set)         # step -> qubits it acts on
-        for nm, grp in node_ops.items():
-            for role, ops in grp.items():
-                for op in ops:
-                    s = op["layer"]
-                    self.participants[s].add(nm)
-                    if role == "move":
-                        step_qubits[s].add(op["qubit"]); self.is_net[s] = True
-                    else:
-                        step_qubits[s].update(op["targets"])
-                        if role in ("remote", "target"):
-                            self.is_net[s] = True
+        for op in self.program.dag.ops.values():
+            s = op.layer
+            self.participants[s].update(op.nodes or [])
+            step_qubits[s].update(op.qubits)
+            if op.kind in ("remote", "move"):
+                self.is_net[s] = True
 
         self.all_steps = set(self.participants)
         self.preds = {s: set() for s in self.all_steps}
