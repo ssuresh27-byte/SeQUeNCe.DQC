@@ -843,21 +843,25 @@ class ClassicalNode(ClassicalEntity):
             cc.change_timeline(timeline)
 
 
-class DQCNode(QuantumRouter):
-    """Code for DQCNode class -- node that supports Distributed Quantum Computing
+class DQCNode(Node):
+    """Node that supports Distributed Quantum Computing.
 
-    It is inherited from the QuantumRouter class so that DQCNode can do all what a QuantumRouter can do, such as routing.
+    Inherits directly from :class:`Node` and carries the entanglement-distribution stack
+    itself (comm-memory array + :class:`ResourceManager` + :class:`NetworkManager` + BSM
+    routing) rather than through :class:`QuantumRouter`, so it can host SEVERAL applications
+    at once. Instead of a single ``self.app`` slot, it keeps an app registry (``self.apps``)
+    and routes each reservation/memory callback to the owning app -- enabling concurrent
+    telegate/teledata sessions on one node. ``QuantumRouter`` is left untouched for everyone else.
 
     Attributes:
         name (str): Name of the quantum node.
         timeline (Timeline): The timeline for scheduling operations.
-        seed (int): the seed of the this node's random number generator.
-        component_templates (dict): templates for the components of this node.
         memo_arr_name (str): name of the communication memory array.
         resource_manager (ResourceManager): resource management module.
         network_manager (NetworkManager): network management module.
-        map_to_middle_node (dict[str, str]): mapping of router names to intermediate bsm node names.
-        app (any): application in use on node.
+        map_to_middle_node (dict[str, str]): mapping of router names to intermediate bsm nodes.
+        apps (list): applications hosted on this node; callbacks route to the owning one.
+        app (any): most recently registered app (legacy single-app read).
 
         one_qubit_gate_fid (float): 1-qubit gate fidelity (default 1 = ideal) -- SAME name
             as the density-matrix manager's knob, so node and manager share one vocabulary.
@@ -882,7 +886,26 @@ class DQCNode(QuantumRouter):
     def __init__(self, name: str, timeline: "Timeline", memo_size: int = 1, seed: int = None, component_templates: dict = {},
                  data_memo_size: int = 1, one_qubit_gate_fid: float = 1.0, two_qubit_gate_fid: float = 1.0,
                  measurement_fid: float = 1.0, t1: float = None, t2: float = None):
-        super().__init__(name, timeline, memo_size, seed, component_templates)
+        super().__init__(name, timeline, seed, two_qubit_gate_fid, measurement_fid)
+
+        # ── entanglement-distribution stack (folded in from QuantumRouter, not inherited) ──
+        self.memo_arr_name = f"{name}.MemoryArray"
+        memo_arr_args = component_templates.get("MemoryArray", {})
+        memory_array = MemoryArray(self.memo_arr_name, timeline, num_memories=memo_size, **memo_arr_args)
+        self.add_component(memory_array)
+        memory_array.add_receiver(self)
+        self.resource_manager: ResourceManager = ResourceManager(self, self.memo_arr_name)
+        self.network_manager: NetworkManager = NetworkManager.create(self, self.memo_arr_name, component_templates=component_templates)
+        self.map_to_middle_node = {}
+        self.down = False
+        swapping_args = component_templates.get("EntanglementSwapping", {})
+        self.swapping_success_prob = swapping_args.get("swapping_success_prob", 1)
+        self.swapping_degradation = swapping_args.get("swapping_degradation", None)
+
+        # ── multi-app hosting (native): a registry of apps, not a single self.app slot ──
+        self.apps: list = []            # registered apps; callbacks route to the owning one
+        self.app = None                 # most-recently registered app (legacy single-app read)
+
         # per-node local (computational) noise parameters (same names as the density manager)
         self.one_qubit_gate_fid = one_qubit_gate_fid
         self.two_qubit_gate_fid = two_qubit_gate_fid
@@ -897,6 +920,118 @@ class DQCNode(QuantumRouter):
         self.teleport_app: TeleportApp = None
         self.teledata_app = None
         self.telegate_app = None
+
+    # ── entanglement stack: message routing, managers, BSM (folded from QuantumRouter) ──
+    def receive_message(self, src: str, msg: "Message") -> None:
+        """Dispatch a received classical message by ``msg.receiver`` (network/resource
+        manager or a named/typed protocol)."""
+        if self.down:
+            log.logger.debug(f"{self.name} is DOWN. Dropping message {msg} from {src}")
+            return
+        log.logger.info(f"{self.name}: receive message {msg} from {src}")
+        if msg.receiver == "network_manager":
+            self.network_manager.received_message(src, msg)
+        elif msg.receiver == "resource_manager":
+            self.resource_manager.received_message(src, msg)
+        else:
+            if msg.receiver is None:   # EntanglementGenerationB messages carry no receiver
+                matching = [p for p in self.protocols if p.protocol_type == msg.protocol_type]
+                for p in matching:
+                    p.received_message(src, msg)
+            else:
+                for protocol in self.protocols:
+                    if protocol.name == msg.receiver:
+                        protocol.received_message(src, msg)
+                        break
+
+    def send_message(self, dst: str, msg: "Message", priority=inf, sender_delay: int = 0) -> None:
+        """Send a classical message (dropped if the node is down)."""
+        if self.down:
+            log.logger.debug(f"{self.name} is DOWN. Dropping message {msg} to {dst}")
+            return
+        log.logger.info(f"{self.name}: send message {msg} to {dst}")
+        if priority == inf:
+            priority = self.timeline.schedule_counter
+        self.cchannels[dst].transmit(msg, self, priority, sender_delay)
+
+    def set_down(self, down: bool):
+        """Set the node's operational status."""
+        log.logger.info(f"{self.name} is {'DOWN' if down else 'UP'}")
+        self.down = down
+
+    def init(self):
+        """Initialize the resource + network managers."""
+        self.resource_manager.init()
+        self.network_manager.init()
+
+    def add_bsm_node(self, bsm_name: str, router_name: str):
+        """Record the BSM node between this node and ``router_name``."""
+        self.map_to_middle_node[router_name] = bsm_name
+
+    def get(self, photon: "Photon", **kwargs):
+        """Receive a photon from local hardware (a quantum memory) and forward it to ``dst``."""
+        dst = kwargs.get("dst", None)
+        if dst is None:
+            raise ValueError("Destination should be supplied for 'get' method on DQCNode")
+        self.send_qubit(dst, photon)
+
+    def memory_expire(self, memory: "Memory") -> None:
+        """Forward an expired memory to the resource manager."""
+        self.resource_manager.memory_expire(memory)
+
+    def reserve_net_resource(self, responder: str, start_time: int, end_time: int, memory_size: int,
+                             target_fidelity: float, entanglement_number: int = 1, identity: int = 0,
+                             app_label: str = "") -> None:
+        """Request an entanglement reservation via the network manager. ``app_label`` tags the
+        reservation so this node's app registry can route its callbacks to the owning app."""
+        self.network_manager.request(responder, start_time, end_time, memory_size, target_fidelity,
+                                     entanglement_number, identity, app_label=app_label)
+
+    # ── multi-app hosting: register apps and route callbacks to the owning one ──
+    def set_app(self, app: "App"):
+        """Register ``app`` on this node. Unlike ``QuantumRouter``'s single slot, several apps
+        can coexist; ``self.app`` still tracks the most recent for any legacy single-app read.
+        (Apps set their ``name`` after this runs, so routing resolves names at callback time.)"""
+        if app not in self.apps:
+            self.apps.append(app)
+        self.app = app
+
+    def add_app(self, app: "App"):
+        """Alias of :meth:`set_app` reading as 'register another app'."""
+        self.set_app(app)
+
+    def get_idle_memory(self, info: "MemoryInfo") -> None:
+        """Route an idle/entangled memory to the app that owns its index."""
+        for app in self.apps:
+            if info.index in getattr(app, "memo_to_reservation", {}):
+                app.get_memory(info)
+                return
+
+    def get_reservation_result(self, reservation: "Reservation", result: bool) -> None:
+        """Route a reservation result (initiator side) to its owning app."""
+        app = self._route_app(reservation)
+        if app is not None:
+            app.get_reservation_result(reservation, result)
+
+    def get_other_reservation(self, reservation: "Reservation") -> None:
+        """Route an incoming reservation (responder side) to its owning app."""
+        app = self._route_app(reservation)
+        if app is not None:
+            app.get_other_reservation(reservation)
+
+    def _route_app(self, reservation):
+        """The app owning ``reservation``, by its ``app_label`` (the app's name). Both endpoints
+        of a session name their app identically, so the initiator's tag routes to the responder's
+        counterpart. Falls back to a substring match, then the sole app."""
+        label = getattr(reservation, "app_label", "") or ""
+        for app in self.apps:
+            if getattr(app, "name", None) == label:
+                return app
+        for app in self.apps:
+            name = getattr(app, "name", "")
+            if name and name in label:
+                return app
+        return self.apps[0] if self.apps else None
 
     @property
     def is_noisy(self) -> bool:

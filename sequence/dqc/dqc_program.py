@@ -20,8 +20,6 @@ Contents
 --------
 DQCMsgType / DQCMessage
     Controller <-> agent step / ACK messages.
-_DualAppRouter
-    Fans the node's single app slot out to both sub-apps (telegate + teledata).
 DQCProgram
     Abstract barriered per-node executor (controller/node contract).
 TeleportationDQCProgram
@@ -102,44 +100,6 @@ class DQCMessage(Message):
 
     def __str__(self):
         return self.string
-
-
-# ── App-callback router ─────────────────────────────────────────────────────
-class _DualAppRouter:
-    """Routes a node's single app-callback slot to BOTH a TelegateApp and a
-    TeledataApp.
-
-    A :class:`~sequence.topology.node.DQCNode` has one ``node.app`` slot, and
-    memory/reservation callbacks go through it. To run telegate *and* teledata on
-    the same node (needed for a hybrid compiler), we register this router as the
-    node's app and dispatch each callback to the right sub-app:
-
-    * reservation callbacks are routed by the reservation's ``app_label`` (set to
-      the initiating app's name and carried to the responder on the RSVP message);
-    * ``get_memory`` is routed by which sub-app has that memory index mapped to a
-      reservation (each app only maps its own, thanks to the label routing above).
-    """
-
-    def __init__(self, tgate: TelegateApp, tdata: TeledataApp):
-        self.tgate = tgate
-        self.tdata = tdata
-        self.name = "dqc_app_router"
-
-    def _route_by_label(self, reservation):
-        label = getattr(reservation, "app_label", "") or ""
-        return self.tdata if "teledata" in label else self.tgate
-
-    def get_reservation_result(self, reservation, result: bool) -> None:
-        self._route_by_label(reservation).get_reservation_result(reservation, result)
-
-    def get_other_reservation(self, reservation) -> None:
-        self._route_by_label(reservation).get_other_reservation(reservation)
-
-    def get_memory(self, info) -> None:
-        if info.index in self.tdata.memo_to_reservation:
-            self.tdata.get_memory(info)
-        elif info.index in self.tgate.memo_to_reservation:
-            self.tgate.get_memory(info)
 
 
 # ── QPU agent (abstract base) ───────────────────────────────────────────────
@@ -469,9 +429,10 @@ class TeleportationDQCProgram(DQCProgram):
     """QPU agent that realizes remote gates and moves with entanglement teleportation.
 
     Remote two-qubit gates run via :class:`TelegateApp` (teleported CNOT/CZ) and
-    qubit moves via :class:`TeledataApp` (state teleportation). Both sub-apps share
-    the node's single app slot through a :class:`_DualAppRouter`, and each reports
-    completion through a callback that releases the step's deferred ACK.
+    qubit moves via :class:`TeledataApp` (state teleportation). Both apps register on
+    the :class:`~sequence.topology.node.DQCNode`, which routes each reservation/memory
+    callback to the owning app; each reports completion through a callback that releases
+    the step's deferred ACK.
 
     Remote CZ is normalized to CNOT.
 
@@ -513,13 +474,12 @@ class TeleportationDQCProgram(DQCProgram):
                      if getattr(ch, "delay", 0) and getattr(ch, "delay", 0) > 0]
         self.cc_delay = float(min(cc_delays)) if cc_delays else DEFAULT_CC_DELAY
 
-        # One TelegateApp + one TeledataApp per node. Each calls node.set_app() in
-        # its ctor, so the LAST one wins that single slot; we then install a router
-        # that dispatches to both.
+        # One TelegateApp + one TeledataApp per node. Each self-registers on the node via
+        # App.__init__ -> node.set_app(); the DQCNode keeps an app registry and routes each
+        # reservation/memory callback to the owning app -- so both coexist (and more can be
+        # added for concurrency) without a DQC-specific router.
         self.tgate = TelegateApp(self.node)
         self.tdata = TeledataApp(self.node)
-        self._router = _DualAppRouter(self.tgate, self.tdata)
-        self.node.set_app(self._router)
 
         # Teledata move bookkeeping.
         #   _expected_moves: dest_slot -> (step, global_q) for moves landing here.
