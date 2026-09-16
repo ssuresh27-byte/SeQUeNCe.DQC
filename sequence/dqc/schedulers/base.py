@@ -26,16 +26,17 @@ class SchedulerBase:
         self.data_owners: Dict[str, Dict[int, int]] = {}
         self.buckets: Dict[str, Dict[str, list]] = {}
 
-    # ── optional hooks (routing / capacity aware schedulers override) ─────────
+    # ── optional hooks (routing / capacity aware schedulers override)
     def set_network(self, edges):
         return self
 
     def set_capacities(self, capacities: Dict[str, int]):
         return self
 
-    # ── placement -> per-node data-slot map (FGP overrides: slot == qubit-id) ─
     def get_data_owners(self, qubit_to_node: Dict[int, str]) -> Dict[str, Dict[int, int]]:
-        """{node_name: {global_qubit: local_slot}} for a static placement."""
+        """{node_name: {global_qubit: local_slot}} for a static placement.
+            placement -> per-node data-slot map (FGP overrides: slot == qubit-id)
+        """
         data_owners = {}
         for nm in self.node_names:
             data_owners[nm] = {}
@@ -43,7 +44,6 @@ class SchedulerBase:
                 data_owners[nm][q] = i
         return data_owners
 
-    # ── to override ──────────────────────────────────────────────────────────
     def compile_circuit(self, circuit) -> Dict[str, Dict[str, list]]:
         """Return {node: {role: [op_dict]}} with a layer/step on each op."""
         raise NotImplementedError
@@ -53,7 +53,7 @@ class SchedulerBase:
         """Bucket each gate into its owning node(s) as local/remote ops, labelled by
         the controller step (``layer``) it runs in. The scheduler's only job is to
         produce the ``layers`` map (gate index -> step)."""
-        self.buckets = {nm: {"local": [], "remote": [], "target": []} for nm in self.node_names}
+        self.buckets = {nm: {"local": [], "remote": []} for nm in self.node_names}
         for i, op in enumerate(raw):
             name, qs, arg = gate_fields(op)
             involved = {self.qubit_to_node[q] for q in qs}

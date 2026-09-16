@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """The compiled-program artifact shared by the compiler stack and the runtime.
 
-A :class:`CompiledProgram` is everything the simulation runtime needs, produced
-once by a compiler (placement) + scheduler (execution): the placement, the
-per-node data-slot map, the per-node op buckets (local / remote / target / move)
-each tagged with a controller ``step``, and the step bookkeeping the central
-controller drives its barrier with.
+A :class:`CompiledProgram` is everything the simulation runtime needs, produced once by a
+compiler (placement + op-generation): the placement, the per-node data-slot map, the per-node
+op buckets (local / remote / move), and the op-level dependency :class:`OpDAG`. The DAG's
+canonical ASAP layering is stamped back onto the op buckets as each op's ``step`` (see
+:func:`build_op_dag`); the barrier replays those waves, the adaptive path walks the DAG.
 """
 from __future__ import annotations
 
@@ -64,12 +64,12 @@ class CompiledProgram:
 
 def summarize(node_ops: Dict[str, Dict[str, List]]):
     """(max_step, net_layers) for a node_ops bucket map. ``net_layers`` are the
-    steps carrying real network cost -- a telegate (remote/target) or a teledata
-    move -- which the controller charges the network delay to."""
+    steps carrying real network cost -- a telegate (remote) or a teledata move --
+    which the controller charges the network delay to."""
     max_step = max((op["layer"] for grp in node_ops.values()
                     for lst in grp.values() for op in lst), default=-1)
     net_layers = {op["layer"] for grp in node_ops.values()
-                  for role in ("remote", "target", "move") for op in grp.get(role, [])}
+                  for role in ("remote", "move") for op in grp.get(role, [])}
     return max_step, net_layers
 
 
@@ -183,7 +183,7 @@ def stream_to_node_ops(stream, node_names, qubit_to_node):
             for q in qs:
                 free[q] = L + 1
 
-    buckets = {nm: {"local": [], "remote": [], "target": [], "move": []} for nm in node_names}
+    buckets = {nm: {"local": [], "remote": [], "move": []} for nm in node_names}
     loc = dict(qubit_to_node)
     for op, L in zip(stream, layers):
         if op[0] == "move":
