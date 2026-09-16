@@ -197,7 +197,7 @@ def stream_to_node_ops(stream, node_names, qubit_to_node):
             _, name, qs, arg = op
             nodes = {loc[q] for q in qs}
             info = {"layer": L, "step": L, "gate": name.lower(), "targets": list(qs),
-                    "arg": arg, "nodes": sorted(nodes), "description": "-".join(sorted(nodes))}
+                    "arg": arg, "nodes": sorted(nodes)}
             if len(nodes) == 1:
                 buckets[next(iter(nodes))]["local"].append(info)
             else:

@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
-"""Base class for SCHEDULERS -- decide WHEN each gate runs (assign a controller step).
+"""Base class for op-generation -- bucket a placed circuit into per-node local/remote ops.
 
-A scheduler takes a placement ({qubit: node}) plus the circuit and produces the
-per-node op buckets (local / remote / target [/ move]) with a ``layer``/``step`` on
-each op, packaged as a :class:`~program.CompiledProgram`. Concrete strategies live
-in their own modules and subclass :class:`SchedulerBase`, overriding
-``compile_circuit``. The one-shot entry point is ``schedule(circuit, topology, placement)``.
-Placement (WHERE each qubit lives) is a separate concern handled by :mod:`compilers`.
+Takes a placement ({qubit: node}) + circuit and produces the per-node op buckets (local /
+remote) via ``compile_circuit``. It does NOT decide the execution layering: that is the
+op-DAG's canonical ASAP layering (see :func:`sequence.dqc.program.build_op_dag`). Placement
+(WHERE each qubit lives) is a separate concern handled by :mod:`compilers`.
 """
 from typing import Dict, List
 
@@ -14,7 +12,7 @@ from sequence.dqc.circuit_ops import gate_fields
 
 
 class SchedulerBase:
-    """Common machinery for schedulers: slot bookkeeping + op bucketing."""
+    """Common machinery for op-generators: slot bookkeeping + op bucketing."""
 
     def __init__(self, n_qubits: int, n_nodes: int, memory_capacity: int,
                  node_names: List[str] = None):
@@ -25,13 +23,6 @@ class SchedulerBase:
         self.qubit_to_node: Dict[int, str] = {}
         self.data_owners: Dict[str, Dict[int, int]] = {}
         self.buckets: Dict[str, Dict[str, list]] = {}
-
-    # ── optional hooks (routing / capacity aware schedulers override)
-    def set_network(self, edges):
-        return self
-
-    def set_capacities(self, capacities: Dict[str, int]):
-        return self
 
     def get_data_owners(self, qubit_to_node: Dict[int, str]) -> Dict[str, Dict[int, int]]:
         """{node_name: {global_qubit: local_slot}} for a static placement.
@@ -58,8 +49,7 @@ class SchedulerBase:
             name, qs, arg = gate_fields(op)
             involved = {self.qubit_to_node[q] for q in qs}
             info = {"layer": layers[i], "step": layers[i], "gate": name.lower(),
-                    "targets": list(qs), "arg": arg, "nodes": sorted(involved),
-                    "description": "-".join(sorted(involved))}
+                    "targets": list(qs), "arg": arg, "nodes": sorted(involved)}
             if len(involved) == 1:
                 self.buckets[next(iter(involved))]["local"].append(info)
             else:  # remote: recorded on both control and target nodes
