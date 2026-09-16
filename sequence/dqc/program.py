@@ -101,12 +101,14 @@ def build_op_dag(node_ops: Dict[str, Dict[str, List]]) -> OpDAG:
             meta[key] = ("move", op, [op["qubit"]])
             dicts_by_key.setdefault(key, []).append(op)
 
-    entries = sorted(meta.items(), key=lambda kv: kv[1][1]["layer"])   # topological by ASAP layer
+    entries = sorted(meta.items(), key=lambda kv: kv[1][1]["layer"])   # any valid topological order
     ops: Dict[int, Op] = {}
+    key_of: Dict[int, tuple] = {}
     order: List[tuple] = []
     for i, (key, (kind, op, qubits)) in enumerate(entries):
         ops[i] = Op(id=i, kind=kind, qubits=qubits, gate=op.get("gate"), arg=op.get("arg"),
-                    nodes=op.get("nodes"), dest=op.get("dest"), layer=op["layer"])
+                    nodes=op.get("nodes"), dest=op.get("dest"), layer=0)
+        key_of[i] = key
         for d in dicts_by_key.get(key, []):
             d["op_id"] = i                     # tag every source op dict with its DAG op id
         order.append((i, qubits))
@@ -123,16 +125,32 @@ def build_op_dag(node_ops: Dict[str, Dict[str, List]]) -> OpDAG:
     for i, ps in preds.items():
         for p in ps:
             succ[p].add(i)
+
+    # Canonical ASAP layer = longest dependency-chain depth, computed from the DAG itself (NOT
+    # from any compile-time scheduler). This IS the layering; the barrier replays it as waves,
+    # the adaptive path ignores it. Write it back onto the source op dicts as step/layer so the
+    # per-step machinery (barrier broadcast, _ops_for) uses the DAG's layering.
+    for i in ops:                         # ops are in topological order (entries sorted above)
+        lyr = 0 if not preds[i] else 1 + max(ops[p].layer for p in preds[i])
+        ops[i].layer = lyr
+        for d in dicts_by_key.get(key_of[i], []):
+            d["step"] = lyr
+            d["layer"] = lyr
     return OpDAG(ops, preds, succ)
 
 
 def build_program(circuit, placement: Dict[int, str],
                   data_owners: Dict[str, Dict[int, int]],
                   node_ops: Dict[str, Dict[str, List]]) -> CompiledProgram:
-    """Assemble a CompiledProgram from a placement + slot map + op buckets."""
+    """Assemble a CompiledProgram from a placement + slot map + op buckets.
+
+    Builds the op-DAG FIRST -- it computes the canonical ASAP layering and stamps it back onto
+    the op buckets -- so ``summarize`` (and the barrier's step machinery) read the DAG's
+    layering rather than whatever order the op generator emitted."""
+    dag = build_op_dag(node_ops)
     max_step, net_layers = summarize(node_ops)
     return CompiledProgram(circuit, dict(placement), data_owners, node_ops,
-                           max_step, net_layers, build_op_dag(node_ops))
+                           max_step, net_layers, dag)
 
 
 def stream_to_node_ops(stream, node_names, qubit_to_node):

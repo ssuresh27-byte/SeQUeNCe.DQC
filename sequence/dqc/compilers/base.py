@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 """Base class for COMPILERS -- circuit + topology -> CompiledProgram (offline).
 
-Compilation is fully offline: the whole plan (placement + every step's ops) is
-decided before execution; the controller then replays it. A compiler is the unit
-that produces that plan. There are two shapes:
+Compilation is fully offline: the whole plan (placement + the ops + their dependency
+DAG) is decided before execution; the controller then replays it. The compiler decides
+PLACEMENT and which ops exist (local vs telegate vs move) -- it does NOT decide the
+execution layering: that is the op-DAG's canonical ASAP layering (computed in
+``program.build_program``), which the barrier replays as waves and the adaptive path
+ignores. Two shapes:
 
-  * :class:`~compilers.basic.BasicCompiler` -- a PARTITIONER (placement) +
-    a SCHEDULER (execution), the classic two-stage static path.
+  * :class:`~compilers.basic.BasicCompiler` -- a PARTITIONER (static placement) +
+    op-generation.
   * :class:`~compilers.fgp.FGPCompiler` -- the monolithic time-sliced telegate +
-    teledata hybrid, which does placement and scheduling together (no swappable
-    inner layers).
+    teledata hybrid, which does placement and per-slice move-generation together.
 """
 from sequence.dqc.program import CompiledProgram
 
