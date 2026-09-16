@@ -259,7 +259,7 @@ class TeledataApp(RequestApp):
         log.logger.debug(f"[TeledataApp:{node.name}] initialized")
 
     def start(self, responder: str, start_t: int, end_t: int, memory_size: int, fidelity: float, data_src: int,
-              dest_slot: Optional[int] = None):
+              dest_slot: Optional[int] = None, identity: int = 0):
         """Start a teledata session (this node acts as Alice).
 
         Args:
@@ -273,11 +273,13 @@ class TeledataApp(RequestApp):
                 state in. Defaults to ``data_src`` (mirror the source index) when None,
                 preserving the original behaviour; pass it explicitly to place the
                 moved qubit in a specific slot (needed by DQCApp qubit moves).
+            identity (int): unique reservation id (default 0 -> auto-assigned) so concurrent
+                sessions route back to this app on both endpoints.
         """
         log.logger.debug(f"[TeledataApp:{self.node.name}] start() → responder={responder}, data_src={data_src}, dest_slot={dest_slot}")
 
         # Reserve and generate EPR pair(s)
-        super().start(responder, start_t, end_t, memory_size, fidelity)
+        super().start(responder, start_t, end_t, memory_size, fidelity, identity=identity)
 
         # Create a new protocol instance for Alice
         protocol = TeleportationProtocol.create(owner=self.node, alice=True, data_memory_index=data_src,

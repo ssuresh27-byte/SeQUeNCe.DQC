@@ -555,7 +555,8 @@ class TelegateApp(RequestApp):
         self._current_step = int(step)
 
     def start(self, responder: str, start_t: int, end_t: int, memory_size: int, fidelity: float,
-              control_src: int, target_src: int, step: Optional[int] = None, gate_type: str = "cx"):
+              control_src: int, target_src: int, step: Optional[int] = None, gate_type: str = "cx",
+              identity: int = 0):
         """Start a telegate session from the control owner (initiator).
 
         Args:
@@ -569,9 +570,11 @@ class TelegateApp(RequestApp):
             step: Optional step number for the operation
             gate_type: Distributed gate to apply, "cx" (remote CNOT, default) or
                 "cz" (remote CZ). Bob learns the choice from Alice's message.
+            identity: unique reservation id (default 0 -> auto-assigned) so concurrent
+                sessions route back to this app on both endpoints.
         """
         # Reserve entanglement window
-        super().start(responder, start_t, end_t, memory_size, fidelity)
+        super().start(responder, start_t, end_t, memory_size, fidelity, identity=identity)
 
         # Create Alice-side protocol on the initiator (control owner)
         log.logger.info(f"[telegate:{self.node.name}] Creating Alice protocol with remote_node_name={responder}, gate_type={gate_type}")

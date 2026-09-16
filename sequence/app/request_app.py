@@ -48,10 +48,16 @@ class RequestApp(App):
         self.path: list[str] = []
         self.memo_to_reservation: dict[int, Reservation] = {}
 
-    def start(self, responder: str, start_t: int, end_t: int, memo_size: int, fidelity: float):
+    def start(self, responder: str, start_t: int, end_t: int, memo_size: int, fidelity: float,
+              identity: int = 0):
         """Method to start the application.
 
             This method will use arguments to create a request and send to the network.
+
+        Args:
+            identity (int): reservation id (default 0 -> the RSVP layer auto-assigns a unique one).
+                Callers with concurrent sessions to disambiguate (e.g. the DQC telegate/teledata
+                apps) pass an explicit unique id so both endpoints can route the reservation.
 
         Side Effects:
             Will create request for network manager on node.
@@ -65,7 +71,7 @@ class RequestApp(App):
         self.memo_size = memo_size
         self.fidelity = fidelity
 
-        self.node.reserve_net_resource(responder, start_t, end_t, memo_size, fidelity)
+        self.node.reserve_net_resource(responder, start_t, end_t, memo_size, fidelity, identity=identity)
 
     def get_reservation_result(self, reservation: Reservation, result: bool) -> None:
         """Method to receive reservation result from network manager. 

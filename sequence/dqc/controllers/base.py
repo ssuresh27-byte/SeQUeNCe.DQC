@@ -25,6 +25,24 @@ from sequence.message import Message
 from sequence.dqc.dqc_program import DQCMessage, DQCMsgType
 
 
+def _session_identity(op) -> int:
+    """A unique per-session reservation identity, shared by BOTH endpoints of a network op.
+
+    Uses the op-DAG op id (``op_id`` -- build_op_dag tags the SAME id onto both parties' copies of
+    a remote/move op) offset by 1 so it is always >= 1 (identity 0 means "auto-assign" to the RSVP
+    layer). Both endpoints derive the same value from their own op copy, so each can bind
+    ``identity -> app`` before the reservation travels (see ``_DualAppRouter``). Falls back to a
+    deterministic hash of the op's defining fields if ``op_id`` is absent."""
+    oid = op.get("op_id")
+    if oid is not None:
+        return oid + 1
+    if "qubit" in op:                        # move: (step, qubit, dest)
+        key = (op.get("step"), op.get("qubit"), op.get("dest"))
+    else:                                    # remote gate: (step, sorted targets)
+        key = (op.get("step"), tuple(sorted(op.get("targets", op.get("qubits", [])))))
+    return (hash(key) & 0x7FFFFFFF) or 1
+
+
 class BaseController(ClassicalNode):
     """Controller base: classical-node wiring, the compiled plan, and DQC-app messaging.
 
@@ -122,6 +140,10 @@ class BaseController(ClassicalNode):
         grp = self.program.node_ops.get(node_name, {})
         out = {kind: [dict(op) for op in grp.get(kind, []) if op.get("step") == step]
                for kind in ("local", "remote", "move")}
+        # Stamp a unique per-session reservation identity on every network op (independent of the
+        # registry): both endpoints derive the same value and bind identity -> app for routing.
+        for op in out["remote"] + out["move"]:
+            op["identity"] = _session_identity(op)
         reg = self.registry
         if reg is not None:
             for op in out["local"]:

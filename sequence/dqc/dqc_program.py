@@ -113,6 +113,57 @@ class DQCMessage(Message):
         return self.string
 
 
+# ── App-callback router ─────────────────────────────────────────────────────
+class _DualAppRouter:
+    """Fans a DQCNode's single ``node.app`` callback slot to BOTH a TelegateApp and a
+    TeledataApp.
+
+    A :class:`~sequence.topology.node.DQCNode` (a QuantumRouter) has one ``node.app`` slot, and
+    the network/resource manager's reservation + memory callbacks all go through it. To run
+    telegate *and* teledata on the same node, this router is registered as ``node.app`` and
+    dispatches each callback to the right sub-app:
+
+    * reservation callbacks (``get_reservation_result`` / ``get_other_reservation``) route by the
+      reservation's ``identity`` -- a unique per-session id the controller assigns and delivers to
+      *both* endpoints in the step op, so each side binds ``identity -> app`` (via :meth:`bind`)
+      before the reservation travels. Unlike a peer tag, a unique identity never collides, even for
+      a telegate and a teledata to the same peer;
+    * ``get_memory`` routes by which sub-app has that memory index mapped to a reservation (each app
+      maps only its own, thanks to the identity routing above).
+
+    Each sub-app then multiplexes its own concurrent sessions internally (by memory index /
+    reservation identity), so one TelegateApp already handles many parallel telegates.
+    """
+
+    def __init__(self, tgate: "TelegateApp", tdata: "TeledataApp"):
+        self.tgate = tgate
+        self.tdata = tdata
+        self.name = "dqc_app_router"
+        self._by_identity: Dict[int, Any] = {}   # reservation identity -> owning sub-app
+
+    def bind(self, identity: int, app) -> None:
+        """Route the session with this reservation ``identity`` to ``app`` (telegate or teledata).
+        Called by the worker for BOTH endpoints when it sets up its half of the op, before the
+        reservation travels."""
+        self._by_identity[identity] = app
+
+    def _route(self, reservation):
+        """The sub-app bound to this reservation's identity (telegate by default if unbound)."""
+        return self._by_identity.get(getattr(reservation, "identity", None), self.tgate)
+
+    def get_reservation_result(self, reservation, result: bool) -> None:
+        self._route(reservation).get_reservation_result(reservation, result)
+
+    def get_other_reservation(self, reservation) -> None:
+        self._route(reservation).get_other_reservation(reservation)
+
+    def get_memory(self, info) -> None:
+        if info.index in self.tdata.memo_to_reservation:
+            self.tdata.get_memory(info)
+        elif info.index in self.tgate.memo_to_reservation:
+            self.tgate.get_memory(info)
+
+
 # ── QPU agent (abstract base) ───────────────────────────────────────────────
 class DQCProgram(ABC):
     """Barriered (non-pipelined) per-node QPU executor — the controller contract.
@@ -385,12 +436,15 @@ class TeleportationDQCProgram(DQCProgram):
                      if getattr(ch, "delay", 0) and getattr(ch, "delay", 0) > 0]
         self.cc_delay = float(min(cc_delays)) if cc_delays else DEFAULT_CC_DELAY
 
-        # One TelegateApp + one TeledataApp per node. Each self-registers on the node via
-        # App.__init__ -> node.set_app(); the DQCNode keeps an app registry and routes each
-        # reservation/memory callback to the owning app -- so both coexist (and more can be
-        # added for concurrency) without a DQC-specific router.
+        # One TelegateApp + one TeledataApp per node (each already multiplexes its own concurrent
+        # sessions internally). The DQCNode (a QuantumRouter) has a single app-callback slot, so we
+        # register a _DualAppRouter as node.app that fans each reservation/memory callback to the
+        # right sub-app -- reservation results by the reservation's unique controller-assigned
+        # identity, entangled memories by memory index.
         self.tgate = TelegateApp(self.node)
         self.tdata = TeledataApp(self.node)
+        self.router = _DualAppRouter(self.tgate, self.tdata)
+        self.node.set_app(self.router)
 
         # Teledata move bookkeeping.
         #   _expected_moves: dest_slot -> (step, global_q) for moves landing here.
@@ -419,16 +473,18 @@ class TeleportationDQCProgram(DQCProgram):
             log.logger.warning(f"[{self.node.name}] malformed remote op @step={step}: {qs}")
             return False
         ctrl_q, tgt_q = qs
-        # The controller resolved this node's role + peer + concrete slots from its registry.
-        role, peer = op.get("role"), op.get("peer")
+        # The controller resolved this node's role + peer + concrete slots + a unique session
+        # identity from its registry. Both endpoints bind identity -> telegate app so the
+        # reservation's callbacks route here (see _DualAppRouter).
+        role, peer, identity = op.get("role"), op.get("peer"), op["identity"]
         if role == "control":
-            self.node.bind_app_peer(peer, self.tgate)   # telegate reservation callbacks -> tgate
+            self.router.bind(identity, self.tgate)
             self._defer(step)
             self._start_telegate_control(op, ctrl_q, op["ctrl_slot"], peer, tgt_q,
-                                         step=step, tgt_slot=op["tgt_slot"])
+                                         step=step, tgt_slot=op["tgt_slot"], identity=identity)
             return True
         if role == "target":
-            self.node.bind_app_peer(peer, self.tgate)   # incoming from the control node
+            self.router.bind(identity, self.tgate)   # incoming from the control node
             self._lock_target_slot(tgt_q, step, slot=op["tgt_slot"])
             self._defer(step)
             return True
@@ -443,7 +499,7 @@ class TeleportationDQCProgram(DQCProgram):
     def _start_telegate_control(self, op: Dict[str, Any],
                                 ctrl_q: int, ctrl_slot: int,
                                 peer_nm: str, tgt_q: int,
-                                step: int, tgt_slot: int = None) -> None:
+                                step: int, tgt_slot: int = None, identity: int = 0) -> None:
         """Start a teleported CNOT where this node owns the control qubit.
 
         The target node locks its own local slot upon receiving the same
@@ -482,6 +538,7 @@ class TeleportationDQCProgram(DQCProgram):
             control_src=ctrl_slot,  # control (local)
             target_src=tgt_slot,    # target (peer)
             gate_type=gate_typ,     # 'cx' (teleported CNOT) or 'cz' (teleported CZ)
+            identity=identity,      # unique session id -> reservation routing (see _DualAppRouter)
         )
 
         log.logger.info(f"TeleGateCNOT started step={step}: control(local q={ctrl_q} slot={ctrl_slot}) → target({peer_nm} q={tgt_q} slot={tgt_slot}); t=[{t0},{t1}]")
@@ -492,22 +549,23 @@ class TeleportationDQCProgram(DQCProgram):
         landing slot if it is being teleported to us. Returns True if we are a party.
         """
         q, dest, dest_slot = op["qubit"], op["dest"], op["dest_slot"]
-        # The controller resolved this node's role + peer + concrete source slot from its registry.
-        role, peer = op.get("role"), op.get("peer")
+        # The controller resolved this node's role + peer + concrete source slot + a unique
+        # session identity; both endpoints bind identity -> teledata app for reservation routing.
+        role, peer, identity = op.get("role"), op.get("peer"), op["identity"]
         if role == "source":
-            self.node.bind_app_peer(peer, self.tdata)   # teledata reservation callbacks -> tdata
+            self.router.bind(identity, self.tdata)
             self._defer(step)
-            self._start_teleport_source(q, op["src_slot"], dest, dest_slot, step=step)
+            self._start_teleport_source(q, op["src_slot"], dest, dest_slot, step=step, identity=identity)
             return True
         if role == "dest":
-            self.node.bind_app_peer(peer, self.tdata)   # incoming from the source node
+            self.router.bind(identity, self.tdata)   # incoming from the source node
             self._expected_moves[dest_slot] = (step, q)
             self._defer(step)
             return True
         return False
 
     def _start_teleport_source(self, q: int, src_slot: int,
-                               dest: str, dest_slot: int, step: int) -> None:
+                               dest: str, dest_slot: int, step: int, identity: int = 0) -> None:
         """Initiate a teledata move of global qubit ``q`` from this (source) node to
         ``dest``'s ``dest_slot``. Defers the step ACK until Bob acknowledges."""
         self._move_by_srcslot[src_slot] = (step, q, dest, dest_slot)
@@ -517,7 +575,7 @@ class TeleportationDQCProgram(DQCProgram):
         log.logger.info(f"[qpu_agent:{self.node.name}] TELEPORT q={q} slot={src_slot} → {dest} slot={dest_slot}; "
                         f"hops={hops} mem_size={mem_size} fid={fidelity}; t=[{t0},{t1}]")
         self.tdata.start(responder=dest, start_t=t0, end_t=t1, memory_size=mem_size,
-                         fidelity=fidelity, data_src=src_slot, dest_slot=dest_slot)
+                         fidelity=fidelity, data_src=src_slot, dest_slot=dest_slot, identity=identity)
 
     # ── completion callbacks (release deferred ACKs) ────────────────────────
     def _on_telegate_complete(self, data_key: int, role: str = "unknown"):
