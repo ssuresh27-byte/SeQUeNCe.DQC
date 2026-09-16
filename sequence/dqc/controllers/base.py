@@ -55,6 +55,7 @@ class BaseController(ClassicalNode):
         self.max_step = -1
         self.net_layers = set()
         self.qnodes = []                          # DQC node objects we orchestrate
+        self.registry = None                      # logical<->physical map (see _init_registry)
 
         # run-time state shared by every policy
         self.current = 0                          # highest completed step + 1
@@ -66,8 +67,21 @@ class BaseController(ClassicalNode):
         self.program = self.compiler.compile(circuit, topology, seed=seed)
         self.max_step = self.program.max_step
         self.net_layers = self.program.net_layers
+        self._init_registry()
         self._on_compiled()
         return self.program
+
+    def _init_registry(self) -> None:
+        """Create the controller-owned :class:`~sequence.dqc.noise.QubitRegistry`, seed it with
+        the program's initial logical->physical placement, and inject it into the quantum
+        manager so the noise layer reads the SAME map the controller evolves. This is the one
+        source of truth for where each logical qubit lives (node/slot) and its qstate key."""
+        from sequence.dqc.noise import QubitRegistry
+        self.registry = QubitRegistry()
+        self.registry.seed_placement(self.program.qubit_to_node, self.program.data_owners)
+        qm = self.timeline.quantum_manager
+        if hasattr(qm, "registry"):               # noise-aware managers hold a registry
+            qm.registry = self.registry           # inject: noise + agents share the controller's map
 
     def _on_compiled(self) -> None:
         """Hook run after ``compile`` (subclasses may derive extra plan state)."""

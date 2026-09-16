@@ -93,6 +93,29 @@ class QubitRegistry:
         self.node_of: dict = {}          # key -> owning DQCNode (routing only)
         self.last_touched: dict = {}     # key -> last sim time (for idle T1/T2)
         self.qubit_to_key: dict = {}     # global logical qubit index -> current qstate key
+        # placement (the logical<->physical map the controller owns and evolves): where each
+        # logical qubit currently lives. Seeded from the compiled program; updated on moves.
+        self.qubit_to_node: dict = {}    # logical qubit -> owning node name
+        self.qubit_to_slot: dict = {}    # logical qubit -> local data-memory slot on that node
+
+    # ── logical qubit -> physical placement (owned/evolved by the controller) ─
+    def seed_placement(self, qubit_to_node: dict, data_owners: dict) -> None:
+        """Seed the initial logical->physical map from the compiled program: ``qubit_to_node``
+        (logical qubit -> node name) and ``data_owners`` (node name -> {qubit: slot})."""
+        self.qubit_to_node = dict(qubit_to_node)
+        self.qubit_to_slot = {}
+        for node_name, slots in data_owners.items():
+            for q, slot in slots.items():
+                self.qubit_to_slot[q] = slot
+
+    def place(self, qubit: int, node_name: str, slot: int) -> None:
+        """Record that logical ``qubit`` now lives on ``node_name`` at ``slot`` (a move delta)."""
+        self.qubit_to_node[qubit] = node_name
+        self.qubit_to_slot[qubit] = slot
+
+    def location(self, qubit: int):
+        """(node_name, slot) of logical ``qubit``, or (None, None) if unplaced."""
+        return self.qubit_to_node.get(qubit), self.qubit_to_slot.get(qubit)
 
     # ── key -> node routing (used by the noise math) ─────────────────────────
     def register_qubit(self, key: int, node) -> None:

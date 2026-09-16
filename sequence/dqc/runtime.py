@@ -153,17 +153,17 @@ def run(circuit, topology, partitioner="topo-aware", scheduler="fgp", seed=0,
             qm = tl.quantum_manager
             qn = {node.name: node for node in net.nodes[DQCNetTopo.DQC_NODE]}
             hopmap = net.hop_distances()                 # topology queries now come off the net
-            # DQC noise: fidelities live on the NODES; the manager only routes key->node.
-            # Each noisy node routes its own qubits to itself; a node with no noise params
-            # registers nothing -> the manager's ideal path for those qubits.
+            ctrl = net.controller                       # built + wired by DQCNetTopo from config
+            if compiler is not None:                    # custom compiler object overrides the named one
+                ctrl.compiler = compiler
+            program = ctrl.compile(circuit, net, seed=seed)   # compiler queries the net; creates the registry
+            # DQC noise: fidelities live on the NODES; the manager only routes key->node. Each
+            # noisy node routes its own qubits to itself into the controller's injected registry
+            # (compile() ran first); a node with no noise params registers nothing -> ideal path.
             if noise_active:
                 for nd in qn.values():
                     nd.register_qubits(qm)
                 qm.noise_rng = np.random.default_rng(noise_seed)
-            ctrl = net.controller                       # built + wired by DQCNetTopo from config
-            if compiler is not None:                    # custom compiler object overrides the named one
-                ctrl.compiler = compiler
-            program = ctrl.compile(circuit, net, seed=seed)   # compiler queries the net
             metrics = _program_metrics(program, net)
             _da.RESERVATION_SLACK_CC_MULT = 6 * max(metrics[2], 1)
             tl.stop_time = int((program.max_step + 16) * STOP_BUDGET * 8)
