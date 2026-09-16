@@ -137,6 +137,16 @@ class BaseController(ClassicalNode):
         """True if ``msg`` is a step-completion ACK from a DQC app."""
         return isinstance(msg, DQCMessage) and msg.msg_type is DQCMsgType.ACK
 
+    def _apply_deltas(self, msg: Message) -> None:
+        """Fold a node's reported placement changes (from a move ACK) into the controller's
+        registry, so the controller owns the logical->physical map updates. No-op if there's
+        no registry or no deltas."""
+        if self.registry is None:
+            return
+        for d in getattr(msg, "deltas", ()) or ():
+            self.registry.place(d["qubit"], d["node"], d["slot"])
+            self.registry.set_key(d["qubit"], d["key"])
+
     # ── run lifecycle ─────────────────────────────────────────────────────────
     def start_execution(self) -> None:
         """Kick off the run (call after ``timeline.init()``). Stamps the wall-clock

@@ -90,6 +90,9 @@ class DQCMessage(Message):
     ACK:
     • step: Controller step index completed on this node
     • node: Sender node name (for controller bookkeeping)
+    • deltas: placement changes this node completed for the step (list of
+      {"qubit", "node", "slot", "key"}), which the controller folds into its registry
+      so it OWNS the logical->physical map updates (empty for non-move steps).
     """
 
     def __init__(self, msg_type: DQCMsgType, receiver: str, **kwargs):
@@ -104,6 +107,7 @@ class DQCMessage(Message):
         elif msg_type is DQCMsgType.ACK:
             self.step = kwargs['step']
             self.node = kwargs['node']
+            self.deltas = kwargs.get('deltas', ())
             self.string = f"DQCMessage(type={msg_type}, step={self.step} is complete, sending from {self.node} to controller)"
 
     def __str__(self):
@@ -188,6 +192,9 @@ class DQCProgram(ABC):
         # flight for that step. A step is ACKed only when the count hits 0, so a
         # node hosting two telegates in one packed step waits for BOTH.
         self._pending: Dict[int, int] = {}
+        # step -> placement changes to report on that step's ACK, so the CONTROLLER (not the
+        # agent) folds move deltas into its registry (it owns the logical->physical map).
+        self._pending_deltas: Dict[int, list] = {}
         self.local_gate_time = LOCAL_GATE_TIME
 
         # Register in node.protocols so the controller's StepMessages route here
@@ -348,7 +355,9 @@ class DQCProgram(ABC):
             self._pending[step] -= 1
             if self._pending[step] <= 0:
                 del self._pending[step]
-                ack = DQCMessage(DQCMsgType.ACK, receiver="controller", step=step, node=self.node.name)
+                deltas = self._pending_deltas.pop(step, ())
+                ack = DQCMessage(DQCMsgType.ACK, receiver="controller", step=step,
+                                 node=self.node.name, deltas=deltas)
                 self._send_to_controller(ack)
                 log.logger.info(f"[qpu_agent:{self.node.name}] deferred ACK sent for step={step}")
 
@@ -660,11 +669,12 @@ class TeleportationDQCProgram(DQCProgram):
             # Not an agent-managed move (e.g. a bare TeledataApp test) -> ignore.
             return
         step, q = self._expected_moves.pop(slot)
-        self.qubit_to_node[q] = self.node.name   # shared dict -> visible everywhere
-        self.data_owned[q] = slot                # this node's map == peer_slots[dest]
-        if self.registry is not None:            # keep the controller's registry current: q's
-            self.registry.set_key(q, data_key)   #   key and its new physical location both moved
-            self.registry.place(q, self.node.name, slot)
+        self.qubit_to_node[q] = self.node.name   # shared dict -> local fallback view / peer slots
+        self.data_owned[q] = slot
+        # Report the relocation on the step's ACK; the CONTROLLER folds it into its registry
+        # (it owns the map), rather than the agent mutating the shared registry directly.
+        self._pending_deltas.setdefault(step, []).append(
+            {"qubit": q, "node": self.node.name, "slot": slot, "key": data_key})
         log.logger.info(f"[qpu_agent:{self.node.name}] MOVE arrived: q={q} now here at slot={slot} (step={step})")
         self._ack_deferred_unit(step)
 

@@ -44,6 +44,7 @@ class BarrierController(BaseController):
     def receive_message(self, src: str, msg: Message) -> None:
         if not self._is_ack(msg):
             return
+        self._apply_deltas(msg)                   # fold any move relocations into the registry
         if msg.step != self.current:
             return
         self.waiting.discard(msg.node)

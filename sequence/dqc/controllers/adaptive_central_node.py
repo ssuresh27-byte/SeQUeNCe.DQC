@@ -106,6 +106,7 @@ class AdaptiveController(BaseController):
     def receive_message(self, src: str, msg: Message) -> None:
         if not self._is_ack(msg):
             return
+        self._apply_deltas(msg)                   # fold any move relocations into the registry
         s = msg.step
         if s not in self.inflight:
             return
