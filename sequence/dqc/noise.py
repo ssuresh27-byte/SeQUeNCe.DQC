@@ -11,11 +11,12 @@ overrides ``run_circuit`` to add PER-NODE noise (routing every qubit to its owni
 and reading the fidelities/coherence LIVE off the node), delegating the ideal execution to
 ``super().run_circuit`` and reusing the base's state/measure/Pauli helpers.
 
-Routing is COMPOSED, not inherited: each manager holds a :class:`QubitRegistry` (``self.registry``)
-that owns both the key->node routing the noise math reads off and a global *logical qubit ->
-qstate key* map shared with the QPU agent (which owns the logical<->slot placement). A qubit
-with no registered node is ideal, so the noise path is entered only for DQC-node qubits
-(never for plain Node / QuantumRouter qubits).
+Routing is COMPOSED, not inherited: each manager holds a
+:class:`~sequence.dqc.registry.QubitRegistry` (``self.registry``) -- the controller-owned
+logical<->physical<->key map, injected here so the noise math can read each qubit's owning
+node off ``node_of`` for its live fidelities/coherence. The noise layer is one *reader* of
+that registry, not its owner. A qubit with no registered node is ideal, so the noise path is
+entered only for DQC-node qubits (never for plain Node / QuantumRouter qubits).
 
 Only the APPLICATION differs: :class:`QuantumManagerKetNoise` samples a Pauli trajectory (a
 ket is a pure state), :class:`QuantumManagerDensityNoise` applies deterministic CPTP (Kraus)
@@ -32,6 +33,7 @@ from ..kernel.quantum_manager import QuantumManager
 from ..kernel.quantum_manager.ket_vector import QuantumManagerKet
 from ..kernel.quantum_manager.density_matrix import QuantumManagerDensity
 from ..components.circuit import Circuit
+from .registry import QubitRegistry
 
 
 # Formalism ids for the noise-aware managers (base ids stay on the pristine managers).
@@ -70,86 +72,6 @@ def dephasing_z_prob(idle_s: float, t1, t2) -> float:
     if t_phi is None or t_phi == float("inf"):
         return 0.0
     return 0.5 * (1.0 - np.exp(-idle_s / t_phi))
-
-
-class QubitRegistry:
-    """Shared routing + logical-qubit registry the noise managers COMPOSE (not inherit).
-
-    Holds the two mappings the DQC noise layer needs, in one place:
-
-    * ``node_of`` -- quantum-manager key -> owning :class:`~sequence.topology.node.DQCNode`.
-      The noise math reads each qubit's fidelities/coherence LIVE off its node (no global
-      fidelity state on the manager). A key with no DQC node is ideal, so the noise path is
-      never entered for it.
-    * ``qubit_to_key`` -- DQC *global (logical) qubit index* -> its current quantum-manager
-      key. Populated/consulted by the QPU agent, which owns the logical<->slot placement, so
-      the agent and the noise layer share ONE source of truth for where a logical qubit lives
-      instead of each re-deriving it.
-
-    ``last_touched`` (key -> last sim time) backs the idle T1/T2 watermark.
-    """
-
-    def __init__(self) -> None:
-        self.node_of: dict = {}          # key -> owning DQCNode (routing only)
-        self.last_touched: dict = {}     # key -> last sim time (for idle T1/T2)
-        self.qubit_to_key: dict = {}     # global logical qubit index -> current qstate key
-        # placement (the logical<->physical map the controller owns and evolves): where each
-        # logical qubit currently lives. Seeded from the compiled program; updated on moves.
-        self.qubit_to_node: dict = {}    # logical qubit -> owning node name
-        self.qubit_to_slot: dict = {}    # logical qubit -> local data-memory slot on that node
-
-    # ── logical qubit -> physical placement (owned/evolved by the controller) ─
-    def seed_placement(self, qubit_to_node: dict, data_owners: dict) -> None:
-        """Seed the initial logical->physical map from the compiled program: ``qubit_to_node``
-        (logical qubit -> node name) and ``data_owners`` (node name -> {qubit: slot})."""
-        self.qubit_to_node = dict(qubit_to_node)
-        self.qubit_to_slot = {}
-        for node_name, slots in data_owners.items():
-            for q, slot in slots.items():
-                self.qubit_to_slot[q] = slot
-
-    def place(self, qubit: int, node_name: str, slot: int) -> None:
-        """Record that logical ``qubit`` now lives on ``node_name`` at ``slot`` (a move delta)."""
-        self.qubit_to_node[qubit] = node_name
-        self.qubit_to_slot[qubit] = slot
-
-    def location(self, qubit: int):
-        """(node_name, slot) of logical ``qubit``, or (None, None) if unplaced."""
-        return self.qubit_to_node.get(qubit), self.qubit_to_slot.get(qubit)
-
-    # ── key -> node routing (used by the noise math) ─────────────────────────
-    def register_qubit(self, key: int, node) -> None:
-        """Route qubit ``key`` to its owning DQCNode (values read live from the node)."""
-        self.node_of[key] = node
-
-    def fids(self, key: int) -> tuple:
-        """(one_qubit_gate_fid, two_qubit_gate_fid, measurement_fid) read live off the
-        owning node; all-ideal if ``key`` has no DQC node."""
-        node = self.node_of.get(key)
-        if node is None:
-            return (1.0, 1.0, 1.0)
-        return (node.one_qubit_gate_fid, node.two_qubit_gate_fid, node.measurement_fid)
-
-    def noise_active(self, keys) -> bool:
-        """True if any of ``keys`` belongs to a registered (noisy) node."""
-        return any(k in self.node_of for k in keys)
-
-    def sim_now(self, keys):
-        """Current sim time (ps) from a registered node's timeline, or None."""
-        for k in keys:
-            node = self.node_of.get(k)
-            if node is not None:
-                return node.timeline.now()
-        return None
-
-    # ── global logical qubit -> key mapping (shared with the QPU agent) ───────
-    def set_key(self, qubit: int, key: int) -> None:
-        """Record the current quantum-manager ``key`` for global logical ``qubit``."""
-        self.qubit_to_key[qubit] = key
-
-    def key_of(self, qubit: int):
-        """Current quantum-manager key for global logical ``qubit`` (None if unmapped)."""
-        return self.qubit_to_key.get(qubit)
 
 
 @QuantumManager.register(KET_VECTOR_NOISE_FORMALISM)

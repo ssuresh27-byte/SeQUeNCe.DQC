@@ -72,11 +72,11 @@ class BaseController(ClassicalNode):
         return self.program
 
     def _init_registry(self) -> None:
-        """Create the controller-owned :class:`~sequence.dqc.noise.QubitRegistry`, seed it with
+        """Create the controller-owned :class:`~sequence.dqc.registry.QubitRegistry`, seed it with
         the program's initial logical->physical placement, and inject it into the quantum
         manager so the noise layer reads the SAME map the controller evolves. This is the one
         source of truth for where each logical qubit lives (node/slot) and its qstate key."""
-        from sequence.dqc.noise import QubitRegistry
+        from sequence.dqc.registry import QubitRegistry
         self.registry = QubitRegistry()
         self.registry.seed_placement(self.program.qubit_to_node, self.program.data_owners)
         qm = self.timeline.quantum_manager

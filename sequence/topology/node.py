@@ -1041,7 +1041,7 @@ class DQCNode(Node):
 
     def register_qubits(self, qm) -> None:
         """Route this node's data + comm qubits (by qstate_key) to THIS node on the quantum
-        manager's :class:`~sequence.dqc.noise.QubitRegistry` (``qm.registry``), so the
+        manager's :class:`~sequence.dqc.registry.QubitRegistry` (``qm.registry``), so the
         trajectory-noise layer reads their fidelities/coherence LIVE off the node. No-op if
         the node is ideal, or if the manager has no such registry (e.g. a plain formalism).
         The node holds the values; the registry only keeps the key->node routing."""
