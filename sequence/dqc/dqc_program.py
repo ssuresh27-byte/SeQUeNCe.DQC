@@ -80,6 +80,13 @@ class DQCMsgType(Enum):
 class DQCMessage(Message):
     """DQC message payloads.
 
+    STEP_MESSAGE:
+    • step: Controller step index to execute on this node
+    • node: Sender (controller) name
+    • ops: this node's ops for the step ({"local"/"remote"/"move": [op, ...]}), resolved by
+      the controller from the compiled program. None -> the node falls back to the ops it was
+      constructed with (used by hand-crafted tests that drive the barrier without a program).
+
     ACK:
     • step: Controller step index completed on this node
     • node: Sender node name (for controller bookkeeping)
@@ -91,6 +98,7 @@ class DQCMessage(Message):
         if msg_type is DQCMsgType.STEP_MESSAGE:
             self.step = kwargs['step']
             self.node = kwargs['node']
+            self.ops = kwargs.get('ops', None)
             self.string = f"DQCMessage(type={msg_type}, moving to step={self.step}, sending from controller to node={self.node})"
 
         elif msg_type is DQCMsgType.ACK:
@@ -207,24 +215,29 @@ class DQCProgram(ABC):
 
         Args:
             src (str): sender (the controller).
-            msg (Message): step message carrying ``step``.
+            msg (Message): step message carrying ``step`` and (usually) this node's ``ops``.
 
         Returns:
             bool: always ``True`` (message handled).
         """
         step = msg.step
-        kinds = ((self.local_map, self._run_local),
-                 (self.remote_map, self._run_remote),
-                 (self.move_map, self._run_move))
-        if not any(step in step_map for step_map, _ in kinds):
+        # The controller sends this node's ops for the step; fall back to the pre-loaded maps
+        # when it doesn't (hand-crafted tests that drive the barrier without a compiled program).
+        ops = getattr(msg, "ops", None)
+        if ops is None:
+            ops = {"local": self.local_map.get(step, []),
+                   "remote": self.remote_map.get(step, []),
+                   "move": self.move_map.get(step, [])}
+        handlers = (("local", self._run_local), ("remote", self._run_remote), ("move", self._run_move))
+        if not any(ops.get(kind) for kind, _ in handlers):
             self._ack_local(step, "no-op")
             return True
         # `deferred` becomes True once any remote op is launched, so the ACK waits
         # for its pending counter to drain (see _ack_deferred_unit). Otherwise the
         # step is local-only.
         deferred = False
-        for step_map, handler in kinds:
-            for op in step_map.get(step, []):
+        for kind, handler in handlers:
+            for op in ops.get(kind, []):
                 deferred = handler(op, step) or deferred
         if not deferred:
             self._ack_local(step, "local-only")

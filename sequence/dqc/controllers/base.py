@@ -93,15 +93,26 @@ class BaseController(ClassicalNode):
 
     # ── talk to the per-node DQC apps ────────────────────────────────────────
     def send_step(self, node_name: str, step: int) -> None:
-        """Dispatch controller ``step`` to one node's DQC app over the classical channel.
+        """Dispatch controller ``step`` to one node's DQC app over the classical channel,
+        carrying that node's ops for the step (resolved from the compiled program).
 
         Args:
             node_name (str): name of the DQC node to run ``step``.
             step (int): controller step index to execute.
         """
         msg = DQCMessage(DQCMsgType.STEP_MESSAGE, receiver="qpu_agent",
-                         step=step, node=self.name)
+                         step=step, node=self.name, ops=self._ops_for(node_name, step))
         self.send_message(node_name, msg)         # ClassicalNode: routes via channel
+
+    def _ops_for(self, node_name: str, step: int):
+        """This node's ops for ``step`` ({"local"/"remote"/"move": [op, ...]}) from the compiled
+        program, or None when there's no program (hand-crafted barrier tests fall back to the
+        ops the agent was constructed with)."""
+        if self.program is None:
+            return None
+        grp = self.program.node_ops.get(node_name, {})
+        return {kind: [op for op in grp.get(kind, []) if op.get("step") == step]
+                for kind in ("local", "remote", "move")}
 
     @staticmethod
     def _is_ack(msg: Message) -> bool:
