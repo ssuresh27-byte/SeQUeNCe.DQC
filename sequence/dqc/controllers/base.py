@@ -110,10 +110,13 @@ class BaseController(ClassicalNode):
         resolve placement itself. Returns None when there's no program (hand-crafted barrier
         tests fall back to the ops the agent was constructed with).
 
-        Copies each op dict (never mutates ``program.node_ops``) and annotates it with concrete
-        slots: local ops get ``slots`` (this node's slot per target); remote ops get
-        ``ctrl_slot`` + ``tgt_slot`` (each party's data slot for the two qubits); move ops get
-        ``src_slot`` (the qubit's current slot; ``dest_slot`` is already fixed by the compiler)."""
+        Copies each op dict (never mutates ``program.node_ops``) and annotates it -- from the
+        registry -- with everything the worker needs so it never consults placement itself:
+        this node's ROLE and the PEER node, plus concrete slots. Local ops get ``slots``;
+        remote ops get ``role`` ("control"/"target"), ``peer``, ``ctrl_slot``, ``tgt_slot``;
+        move ops get ``role`` ("source"/"dest"), ``peer``, ``src_slot`` (``dest_slot`` is fixed
+        by the compiler). Returns None when there's no program (hand-crafted barrier tests fall
+        back to the ops the agent was constructed with)."""
         if self.program is None:
             return None
         grp = self.program.node_ops.get(node_name, {})
@@ -126,10 +129,22 @@ class BaseController(ClassicalNode):
             for op in out["remote"]:
                 qs = op.get("qubits", op.get("targets", []))
                 if len(qs) == 2:
-                    op["ctrl_slot"] = reg.qubit_to_slot.get(qs[0])
-                    op["tgt_slot"] = reg.qubit_to_slot.get(qs[1])
+                    ctrl_q, tgt_q = qs
+                    op["ctrl_slot"] = reg.qubit_to_slot.get(ctrl_q)
+                    op["tgt_slot"] = reg.qubit_to_slot.get(tgt_q)
+                    ctrl_node, tgt_node = reg.qubit_to_node.get(ctrl_q), reg.qubit_to_node.get(tgt_q)
+                    if node_name == ctrl_node:
+                        op["role"], op["peer"] = "control", tgt_node
+                    elif node_name == tgt_node:
+                        op["role"], op["peer"] = "target", ctrl_node
             for op in out["move"]:
-                op["src_slot"] = reg.qubit_to_slot.get(op.get("qubit"))
+                q, dest = op.get("qubit"), op.get("dest")
+                op["src_slot"] = reg.qubit_to_slot.get(q)
+                src_node = reg.qubit_to_node.get(q)
+                if node_name == src_node:
+                    op["role"], op["peer"] = "source", dest
+                elif node_name == dest:
+                    op["role"], op["peer"] = "dest", src_node
         return out
 
     @staticmethod
