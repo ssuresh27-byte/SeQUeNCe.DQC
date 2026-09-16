@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
-"""Runtime harness: build the network, wire in the controller, run, measure.
+"""Runtime harness: build the network, run, measure.
 
-``run(circuit, topology, compiler, scheduler)`` is the single entry point. It
-builds the SeQUeNCe ``DQCNetTopo`` network, creates the central controller as a
-real node in it (connected by classical channels to every DQC node), lets the
-controller COMPILE the program (placement via the compiler + scheduling via the
-scheduler) and then DRIVE the barrier, and finally reads out the data qubits.
+``run(circuit, topology, ...)`` is the single entry point. Per shot it expands the topology
+to a DQCNetTopo config (which builds the DQC nodes + the central controller + channels), has
+the controller compile the program and drive its barrier over classical channels, then reads
+out the data qubits. ``run`` is a thin shot-loop over ``_one_shot``, which reads as a pipeline
+(``_build_config`` -> build net -> ``ctrl.compile`` -> ``_register_noise`` -> ``_attach_agents``
+-> run -> ``_measure``).
 
-Purification never fires: ``purification_policy`` sets a LOW reservation target
-fidelity, so a multi-hop pair's swap-degraded bookkept fidelity still clears it and
-no distillation is ever requested -- required for correct multi-hop teledata moves.
-All trajectory noise is native to the quantum manager (per-node, self-registered by
-each DQCNode). No monkeypatching.
+Purification never fires: ``purification_policy`` sets a LOW reservation target fidelity, so a
+multi-hop pair's swap-degraded bookkept fidelity still clears it and no distillation is ever
+requested -- required for correct multi-hop teledata moves. All trajectory noise is native to
+the quantum manager (per-node, self-registered by each DQCNode). No monkeypatching.
 """
 
 
@@ -125,22 +125,20 @@ def run(circuit, topology, partitioner="topo-aware", scheduler="fgp", seed=0,
     if formalism not in ("ket", "density"):
         raise ValueError(f"formalism must be 'ket' or 'density', got {formalism!r}.")
     n = circuit.size
-    if data_qubits is None:
-        data_qubits = range(n)
-    data_qubits = set(data_qubits)
+    data_qubits = set(range(n) if data_qubits is None else data_qubits)
+    # Noise is active iff the topology declares any per-node local noise; it selects the
+    # noise-aware quantum manager and is applied natively (each DQCNode self-registers).
+    noise_active = any(_spec_noisy(p) for p in getattr(topology, "node_noise", {}).values())
     _dumped = {"done": False}
 
-    def _one_shot(shot_rng, noise_seed):
-        # Generous memory so the controller can compile AFTER the net is built:
-        # data memory holds every qubit slot (FGP slot==qubit-id); comm pool >> load.
-        # The controller (policy + named compiler) is declared in the config and BUILT by
-        # DQCNetTopo; a custom compiler OBJECT is injected below to override the built one.
+    def _build_config():
+        """The DQCNetTopo config for one shot: the topology's sim_config with the chosen
+        controller policy + compiler, the state formalism, and memory sized to the circuit."""
         topology.controller_policy = controller
         topology.compiler_spec = {"partitioner": partitioner, "scheduler": scheduler}
         config = topology.sim_config()
-        # Select the state formalism (ket / density) and its noise variant when noise is active.
         config["formalism"] = _FORMALISMS[(formalism, noise_active)]
-        for nd in config["nodes"]:
+        for nd in config["nodes"]:                   # generous memory: data holds every qubit slot
             if nd.get("type") == "DQCNode":
                 nd["data_memo_size"] = max(nd.get("data_memo_size", 0), n)
                 nd["memo_size"] = max(nd.get("memo_size", 0), 8 * n + 8)
@@ -148,62 +146,61 @@ def run(circuit, topology, partitioner="topo-aware", scheduler="fgp", seed=0,
             with open(dump_config, "w") as f:
                 json.dump(config, f, indent=2)
             _dumped["done"] = True
+        return config
+
+    def _register_noise(qn, qm, noise_seed):
+        """Route each noisy node's qubits to itself in the controller's registry (compile ran
+        first), so the noise layer reads their live fidelities. No-op for ideal nodes."""
+        if noise_active:
+            for nd in qn.values():
+                nd.register_qubits(qm)
+            qm.noise_rng = np.random.default_rng(noise_seed)
+
+    def _attach_agents(qn, program, ctrl, hopmap):
+        """Install one TeleportationDQCProgram per DQC node (executes the controller's steps)."""
+        do = program.data_owners; ps = {nm: do[nm] for nm in qn}
+        for nm, nd in qn.items():
+            TeleportationDQCProgram(
+                node=nd, qubit_to_node=program.qubit_to_node,
+                local_ops=program.node_ops[nm]["local"], remote_ops=program.node_ops[nm]["remote"],
+                data_owned=do[nm], peer_slots=ps, controller_name=ctrl.name,
+                hop_distances=hopmap.get(nm, {}), reservation_policy=purification_policy,
+                move_ops=program.node_ops[nm].get("move", []))
+
+    def _measure(qn, program, tl, rng):
+        """Read out the requested data qubits; return the packed measured bitstring."""
+        meas = {}
+        for nm, nd in qn.items():
+            for gq, slot in program.data_owners[nm].items():
+                if gq not in data_qubits:
+                    continue
+                key = nd.get_component_by_name(nd.data_memo_arr_name)[slot].qstate_key
+                c = Circuit(1); c.measure(0)
+                meas[gq] = tl.quantum_manager.run_circuit(c, [key], rng.random())[key]
+        return sum(b << gq for gq, b in meas.items())
+
+    def _one_shot(shot_rng, noise_seed):
+        config = _build_config()
         with contextlib.redirect_stdout(io.StringIO()):
-            net = DQCNetTopo(config); tl = net.tl
-            qm = tl.quantum_manager
+            net = DQCNetTopo(config); tl = net.tl; qm = tl.quantum_manager
             qn = {node.name: node for node in net.nodes[DQCNetTopo.DQC_NODE]}
-            hopmap = net.hop_distances()                 # topology queries now come off the net
-            ctrl = net.controller                       # built + wired by DQCNetTopo from config
-            if compiler is not None:                    # custom compiler object overrides the named one
+            ctrl = net.controller                       # built + wired by DQCNetTopo from the config
+            if compiler is not None:                    # a custom compiler object overrides the named one
                 ctrl.compiler = compiler
-            program = ctrl.compile(circuit, net, seed=seed)   # compiler queries the net; creates the registry
-            # DQC noise: fidelities live on the NODES; the manager only routes key->node. Each
-            # noisy node routes its own qubits to itself into the controller's injected registry
-            # (compile() ran first); a node with no noise params registers nothing -> ideal path.
-            if noise_active:
-                for nd in qn.values():
-                    nd.register_qubits(qm)
-                qm.noise_rng = np.random.default_rng(noise_seed)
+            program = ctrl.compile(circuit, net, seed=seed)   # compiler queries the net; seeds the registry
+            _register_noise(qn, qm, noise_seed)
             metrics = _program_metrics(program, net)
             _da.RESERVATION_SLACK_CC_MULT = 6 * max(metrics[2], 1)
             tl.stop_time = int((program.max_step + 16) * STOP_BUDGET * 8)
-            do = program.data_owners; ps = {nm: do[nm] for nm in qn}
-            for nm, nd in qn.items():
-                TeleportationDQCProgram(
-                    node=nd, qubit_to_node=program.qubit_to_node,
-                    local_ops=program.node_ops[nm]["local"],
-                    remote_ops=program.node_ops[nm]["remote"], data_owned=do[nm],
-                    peer_slots=ps, controller_name=ctrl.name,
-                    hop_distances=hopmap.get(nm, {}), reservation_policy=purification_policy,
-                    move_ops=program.node_ops[nm].get("move", []))
+            _attach_agents(qn, program, ctrl, net.hop_distances())
             tl.init(); ctrl.start_execution()
             t0 = time.time(); tl.run(); wall = time.time() - t0
-            meas = {}
-            for nm, nd in qn.items():
-                for gq, slot in do[nm].items():
-                    if gq not in data_qubits:
-                        continue
-                    arr = nd.get_component_by_name(nd.data_memo_arr_name)
-                    key = arr[slot].qstate_key
-                    c = Circuit(1); c.measure(0)
-                    meas[gq] = tl.quantum_manager.run_circuit(c, [key], shot_rng.random())[key]
-            measured = sum(b << gq for gq, b in meas.items())
+            measured = _measure(qn, program, tl, shot_rng)
             return measured, ctrl.current, program, metrics, wall, tl.now() / 1e9
 
-    # Noise is active iff the topology declares any per-node local noise. Per-node knobs
-    # are applied natively by the noise manager (each DQCNode self-registers its qubits).
-    def _spec_noisy(p):
-        return (p.get("one_qubit_gate_fid", 1.0) < 1.0 or p.get("two_qubit_gate_fid", 1.0) < 1.0
-                or p.get("measurement_fid", 1.0) < 1.0 or p.get("t1") is not None
-                or p.get("t2") is not None)
-    noise_active = any(_spec_noisy(p) for p in getattr(topology, "node_noise", {}).values())
-
-    # All noise is native to the quantum manager (per-node self-registered by each
-    # noisy DQCNode in _one_shot).
+    # ── shot loop + result assembly ──────────────────────────────────────────
     meas_rng = np.random.default_rng(meas_seed)
-    successes = 0
-    hist_shots = Counter()
-    last = None
+    successes, hist_shots, last = 0, Counter(), None
     for shot_idx in range(max(1, shots)):
         measured, reached, program, metrics, wall, sim_ms = _one_shot(meas_rng, meas_seed + 1000 + shot_idx)
         hist_shots[measured] += 1
@@ -217,11 +214,16 @@ def run(circuit, topology, partitioner="topo-aware", scheduler="fgp", seed=0,
               "steps": program.max_step, "nodes_used": len(set(program.qubit_to_node.values())),
               "sim_ms": sim_ms, "wall": wall, "reached": reached}
     if shots > 1 or noise_active:
-        result["shots"] = max(1, shots)
-        result["successes"] = successes
-        result["success_prob"] = successes / max(1, shots)
-        result["measured_hist"] = dict(sorted(hist_shots.items()))
+        result.update(shots=max(1, shots), successes=successes,
+                      success_prob=successes / max(1, shots),
+                      measured_hist=dict(sorted(hist_shots.items())))
     else:
-        result["ok"] = (expected is not None and measured == expected
-                        and reached >= program.max_step)
+        result["ok"] = (expected is not None and measured == expected and reached >= program.max_step)
     return result
+
+
+def _spec_noisy(p: dict) -> bool:
+    """True if a per-node noise spec declares any non-ideal fidelity or a T1/T2 time."""
+    return (p.get("one_qubit_gate_fid", 1.0) < 1.0 or p.get("two_qubit_gate_fid", 1.0) < 1.0
+            or p.get("measurement_fid", 1.0) < 1.0 or p.get("t1") is not None
+            or p.get("t2") is not None)
