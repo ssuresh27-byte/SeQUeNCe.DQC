@@ -21,7 +21,6 @@ if TYPE_CHECKING:
     from ..components.memory import Memory
     from ..components.photon import Photon
     from ..app.app import App
-    from ..app.request_app import RequestApp
     from ..app.teleportation.teleport_app import TeleportApp
 
 from ..kernel.entity import Entity, ClassicalEntity
@@ -921,8 +920,9 @@ class DQCNode(Node):
 
     # ── entanglement stack: message routing, managers, BSM (folded from QuantumRouter) ──
     def receive_message(self, src: str, msg: "Message") -> None:
-        """Dispatch a received classical message by ``msg.receiver`` (network/resource
-        manager or a named/typed protocol)."""
+        """Dispatch a received classical message by ``msg.receiver``: the network/resource
+        manager, one of the teleportation apps (which register their name on the node), or a
+        named/typed protocol."""
         if self.down:
             log.logger.debug(f"{self.name} is DOWN. Dropping message {msg} from {src}")
             return
@@ -931,6 +931,12 @@ class DQCNode(Node):
             self.network_manager.received_message(src, msg)
         elif msg.receiver == "resource_manager":
             self.resource_manager.received_message(src, msg)
+        elif msg.receiver == "teleport_app":
+            self.teleport_app.received_message(src, msg)
+        elif msg.receiver == "teledata_app":
+            self.teledata_app.received_message(src, msg)
+        elif msg.receiver == "telegate_app":
+            self.telegate_app.received_message(src, msg)
         else:
             if msg.receiver is None:   # EntanglementGenerationB messages carry no receiver
                 matching = [p for p in self.protocols if p.protocol_type == msg.protocol_type]
@@ -1045,33 +1051,3 @@ class DQCNode(Node):
         for arr_name in (self.memo_arr_name, self.data_memo_arr_name):
             for mem in self.get_component_by_name(arr_name):
                 registry.register_qubit(mem.qstate_key, self)
-
-    def receive_message(self, src: str, msg: "Message") -> None:
-        """Determine what to do when a message is received, based on the msg.receiver.
-
-        Args:
-            src (str): name of node that sent the message.
-            msg (Message): the received message.
-        """
-
-        log.logger.info(f"{self.name} receive message {msg} from {src}")
-        if msg.receiver == "network_manager":
-            self.network_manager.received_message(src, msg)
-        elif msg.receiver == "resource_manager":
-            self.resource_manager.received_message(src, msg)
-        elif msg.receiver == "teleport_app":
-            self.teleport_app.received_message(src, msg)
-        elif msg.receiver == "teledata_app":
-            self.teledata_app.received_message(src, msg)
-        elif msg.receiver == "telegate_app":
-            self.telegate_app.received_message(src, msg)
-        else:
-            if msg.receiver is None:  # the msg sent by EntanglementGenerationB doesn't have a receiver (EGA & EGB not paired)
-                matching = [p for p in self.protocols if p.protocol_type == msg.protocol_type]
-                for p in matching:    # the valid_trigger_time() function resolves multiple matching issue
-                    p.received_message(src, msg)
-            else:
-                for protocol in self.protocols:
-                    if protocol.name == msg.receiver:
-                        protocol.received_message(src, msg)
-                        break
