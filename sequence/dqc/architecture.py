@@ -1,20 +1,19 @@
 #!/usr/bin/env python3
-"""Physical network topologies for distributed quantum computing (DQC).
+"""DQC topology config generator -- a lean spec that expands into a DQCNetTopo config.
 
-A :class:`DQCArchitecture` is the *single source of truth* for the physical network:
-its nodes (each with a fixed data-memory capacity), its physical links (edges), its
-communication-memory size, and optional per-node local noise. It is loaded from /
-saved to a lean JSON config, and expands on demand into the full SeQUeNCe
-:class:`~sequence.topology.dqc_net_topo.DQCNetTopo` config the simulator consumes
-(a BSM node per edge + classical/quantum channels, in the same layout as the
-teleport example configs). A compiler reads nodes + capacities + hop-distances from
-it; the simulator loads :meth:`sim_config`.
+A :class:`DQCArchitecture` is a *config-generation utility*: it captures a lean description
+of the physical network (nodes with a data-memory capacity, physical links, comm-memory size,
+optional per-node local noise, and the controller policy/compiler choice) and expands it via
+:meth:`sim_config` into the full SeQUeNCe :class:`~sequence.topology.dqc_net_topo.DQCNetTopo`
+config the simulator consumes (a BSM node per edge + classical/quantum channels + the
+controller node, in the teleport-json layout). It does NO simulation and answers NO topology
+queries -- once a :class:`DQCNetTopo` is built from the config, THAT is the source of truth
+(hop distances, capacities, node names; see :mod:`sequence.dqc.runtime`).
 
 The generators (:func:`make_star`, :func:`make_grid`, :func:`make_caveman`) build on
 top of SeQUeNCe's pre-packaged graph builders in :mod:`sequence.utils.graphs`, so DQC
-topologies live alongside and reuse the same NetworkX generators the router configs
-use. Any NetworkX graph (from ``graphs`` or elsewhere) can be turned into a
-DQCArchitecture via :meth:`DQCArchitecture.from_nx_graph`.
+topologies reuse the same NetworkX generators the router configs use. Any NetworkX graph can
+be turned into a DQCArchitecture via :meth:`DQCArchitecture.from_nx_graph`.
 """
 from __future__ import annotations
 
@@ -80,20 +79,11 @@ class DQCArchitecture:
         # live in JSON -- pass it to run() to override the built one.
         self.controller_policy = "barrier"                                  # "barrier" | "adaptive"
         self.compiler_spec = {"partitioner": "topo-aware", "scheduler": "fgp"}
-        self._rebuild_graph()
 
     @property
     def node_names(self) -> List[str]:
         """Node names in insertion order (derived from ``capacities``)."""
         return list(self.capacities)
-
-    def _rebuild_graph(self) -> None:
-        """Recompute the interaction graph + all-pairs hop distances from the current
-        nodes/edges. Called after any structural mutation (:meth:`add_node`/:meth:`add_edge`)."""
-        self._G = nx.Graph()
-        self._G.add_nodes_from(self.capacities)
-        self._G.add_edges_from(self.edges)
-        self._apsp = dict(nx.all_pairs_shortest_path_length(self._G))
 
     # ── incremental construction (node-centric builder) ─────────────────
     def add_node(self, name: str, data_qubits: int = 1, *,
@@ -132,7 +122,6 @@ class DQCArchitecture:
             self.node_noise[name] = noise
         else:
             self.node_noise.pop(name, None)
-        self._rebuild_graph()
         return self
 
     def add_edge(self, a: str, b: str) -> "DQCArchitecture":
@@ -149,26 +138,7 @@ class DQCArchitecture:
             if nm not in self.capacities:
                 raise ValueError(f"add_edge: unknown node '{nm}'. Call add_node('{nm}', ...) first.")
         self.edges.append((a, b))
-        self._rebuild_graph()
         return self
-
-    # ── network queries the compiler needs ──────────────────────────────
-    def hop(self, a: str, b: str) -> int:
-        """Physical hop-distance between two nodes (large if unreachable)."""
-        return 0 if a == b else self._apsp.get(a, {}).get(b, 10 ** 6)
-
-    def hop_distances(self) -> Dict[str, Dict[str, int]]:
-        """{node: {peer: hops}} for every ordered pair of distinct nodes."""
-        return {u: {v: self.hop(u, v) for v in self.node_names if v != u}
-                for u in self.node_names}
-
-    @property
-    def total_capacity(self) -> int:
-        return sum(self.capacities.values())
-
-    @property
-    def diameter(self) -> int:
-        return nx.diameter(self._G) if self._G.number_of_nodes() > 1 else 0
 
     # ── construction from a NetworkX graph (reuse sequence.utils.graphs) ──
     @classmethod
@@ -204,34 +174,38 @@ class DQCArchitecture:
         return cls(d["name"], d["capacities"], d["edges"], d.get("comm_memo", 16),
                    d.get("node_noise"))
 
-    # ── expansion to the SeQUeNCe DQCNetTopo config ─────────────────────
-    def sim_config(self, comm_memo: int = None) -> dict:
-        """Full DQCNetTopo config: a BSM node per physical edge + classical/quantum
-        channels (teleport-json layout). ``data_memo_size`` is the node's declared
-        hardware capacity; per-node noise appears inline on each DQCNode entry.
+    # ── expansion to the DQCNetTopo config (the DQC parallel of utils.nx_converter) ──
+    def generate_nodes(self, comm_memo: int = None) -> List[dict]:
+        """DQCNode config entries (parallels :func:`sequence.utils.nx_converter.generate_nodes`).
+
+        ``capacity`` is the LOGICAL data-qubit capacity the compiler partitions against;
+        ``data_memo_size`` is the PHYSICAL memory allocation (the runtime may bump it to hold
+        every qubit slot); per-node noise appears inline on each DQCNode entry.
         """
         comm = self.comm_memo if comm_memo is None else comm_memo
-        # "capacity" is the LOGICAL data-qubit capacity the compiler partitions against;
-        # "data_memo_size" is the PHYSICAL memory allocation (the runtime may bump it to
-        # hold every qubit slot). DQCNetTopo reads "capacity" for its compiler-facing API.
-        nodes = [{"name": nm, "type": "DQCNode", "seed": i + 1,
-                  "memo_size": max(comm, self.capacities[nm] + 4),
-                  "data_memo_size": max(1, self.capacities[nm]),
-                  "capacity": self.capacities[nm],
-                  "group": 0, "template": "teleportation",
-                  **{k: v for k, v in self.node_noise.get(nm, {}).items()
-                     if k in self.NOISE_KEYS}}
-                 for i, nm in enumerate(self.node_names)]
-        # Fibre length per hop and the matching classical (heralding/control) delay:
-        # ~5e6 ps per km (light in fibre ~2e5 km/s). Longer links => each entanglement
-        # attempt's herald round-trip takes longer => execution time grows.
+        return [{"name": nm, "type": "DQCNode", "seed": i + 1,
+                 "memo_size": max(comm, self.capacities[nm] + 4),
+                 "data_memo_size": max(1, self.capacities[nm]),
+                 "capacity": self.capacities[nm],
+                 "group": 0, "template": "teleportation",
+                 **{k: v for k, v in self.node_noise.get(nm, {}).items() if k in self.NOISE_KEYS}}
+                for i, nm in enumerate(self.node_names)]
+
+    def generate_channels(self) -> Tuple[List[dict], List[dict], List[dict]]:
+        """Per physical edge, a BSM node + its quantum/classical channels (meet-in-the-middle),
+        plus all-pairs classical channels between DQC nodes. Returns
+        ``(bsm_nodes, qchannels, cchannels)``. Parallels the edge loop in
+        :func:`sequence.utils.nx_converter.generate_config`.
+        """
+        # Fibre length per hop and the matching classical (heralding) delay: ~5e6 ps/km
+        # (light in fibre ~2e5 km/s). Longer links => each herald round-trip takes longer.
         d = self.link_km
         delay = int(d * 1_000_000)
-        qch, cch, seed = [], [], 100
+        bsm_nodes, qch, cch, seed = [], [], [], 100
         for (u, v) in self.edges:
             bsm = f"BSM_{u}_{v}"
-            nodes.append({"name": bsm, "type": "BSMNode", "seed": seed,
-                          "group": 0, "template": "teleportation"}); seed += 1
+            bsm_nodes.append({"name": bsm, "type": "BSMNode", "seed": seed,
+                              "group": 0, "template": "teleportation"}); seed += 1
             for r in (u, v):
                 qch.append({"source": r, "destination": bsm, "distance": d, "attenuation": 0.0002})
                 cch.append({"source": r, "destination": bsm, "delay": delay})
@@ -240,18 +214,35 @@ class DQCArchitecture:
             for b in self.node_names:
                 if a != b:
                     cch.append({"source": a, "destination": b, "delay": delay})
-        # Central controller: a real node DQCNetTopo builds (by policy) with its (named)
-        # compiler, wired to every DQC node by classical channels. A small control-plane
-        # delay keeps the barrier round-trip from dominating the reported sim time.
-        ctrl_delay = 1
-        nodes.append({"name": "controller", "type": "Controller", "seed": seed,
-                      "policy": self.controller_policy, "compiler": dict(self.compiler_spec)})
-        for nm in self.node_names:
-            cch.append({"source": "controller", "destination": nm, "delay": ctrl_delay})
-            cch.append({"source": nm, "destination": "controller", "delay": ctrl_delay})
+        return bsm_nodes, qch, cch
+
+    def generate_controller(self) -> Tuple[dict, List[dict]]:
+        """The central controller node (scheduling policy + named compiler) and its classical
+        channels to every DQC node. Returns ``(controller_node, cchannels)``; DQCNetTopo builds
+        and wires it. A custom compiler OBJECT can't live in JSON -- pass it to run() to
+        override the built one. A small control-plane delay keeps the barrier round-trip from
+        dominating the reported sim time.
+        """
+        node = {"name": "controller", "type": "Controller", "seed": 0,
+                "policy": self.controller_policy, "compiler": dict(self.compiler_spec)}
+        cch = [ch for nm in self.node_names for ch in
+               ({"source": "controller", "destination": nm, "delay": 1},
+                {"source": nm, "destination": "controller", "delay": 1})]
+        return node, cch
+
+    def sim_config(self, comm_memo: int = None) -> dict:
+        """Expand this architecture into the full DQCNetTopo config the simulator consumes
+        (teleport-json layout). The DQC parallel of
+        :func:`sequence.utils.nx_converter.generate_config`: assemble the DQC nodes, per-edge
+        BSM nodes + channels, and the controller from the converter helpers above.
+        """
+        nodes = self.generate_nodes(comm_memo)
+        bsm_nodes, qch, cch = self.generate_channels()
+        ctrl_node, ctrl_cch = self.generate_controller()
         return {"templates": {"teleportation": {"MemoryArray": {"fidelity": 1,
                                                                 "efficiency": self.mem_efficiency}}},
-                "nodes": nodes, "qchannels": qch, "cchannels": cch,
+                "nodes": nodes + bsm_nodes + [ctrl_node],
+                "qchannels": qch, "cchannels": cch + ctrl_cch,
                 "stop_time": 10_000_000_000_000, "is_parallel": False}
 
 
