@@ -106,13 +106,31 @@ class BaseController(ClassicalNode):
 
     def _ops_for(self, node_name: str, step: int):
         """This node's ops for ``step`` ({"local"/"remote"/"move": [op, ...]}) from the compiled
-        program, or None when there's no program (hand-crafted barrier tests fall back to the
-        ops the agent was constructed with)."""
+        program, with concrete physical slots resolved from the registry so the worker doesn't
+        resolve placement itself. Returns None when there's no program (hand-crafted barrier
+        tests fall back to the ops the agent was constructed with).
+
+        Copies each op dict (never mutates ``program.node_ops``) and annotates it with concrete
+        slots: local ops get ``slots`` (this node's slot per target); remote ops get
+        ``ctrl_slot`` + ``tgt_slot`` (each party's data slot for the two qubits); move ops get
+        ``src_slot`` (the qubit's current slot; ``dest_slot`` is already fixed by the compiler)."""
         if self.program is None:
             return None
         grp = self.program.node_ops.get(node_name, {})
-        return {kind: [op for op in grp.get(kind, []) if op.get("step") == step]
-                for kind in ("local", "remote", "move")}
+        out = {kind: [dict(op) for op in grp.get(kind, []) if op.get("step") == step]
+               for kind in ("local", "remote", "move")}
+        reg = self.registry
+        if reg is not None:
+            for op in out["local"]:
+                op["slots"] = [reg.qubit_to_slot.get(q) for q in op.get("targets", [])]
+            for op in out["remote"]:
+                qs = op.get("qubits", op.get("targets", []))
+                if len(qs) == 2:
+                    op["ctrl_slot"] = reg.qubit_to_slot.get(qs[0])
+                    op["tgt_slot"] = reg.qubit_to_slot.get(qs[1])
+            for op in out["move"]:
+                op["src_slot"] = reg.qubit_to_slot.get(op.get("qubit"))
+        return out
 
     @staticmethod
     def _is_ack(msg: Message) -> bool:

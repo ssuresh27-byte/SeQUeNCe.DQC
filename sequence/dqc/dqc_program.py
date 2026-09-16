@@ -282,12 +282,19 @@ class DQCProgram(ABC):
             log.logger.warning(f"[qpu_agent:{self.node.name}] _do_local with no targets: {op}")
             return
 
-        # Map global qubit IDs → local memory slots on this node
+        # Physical slots: use the controller-resolved slots from the instruction; fall back to
+        # local resolution (hand-crafted tests / no registry). Keys are always read live off the
+        # slots (authoritative), and the registry's logical->key view is kept current.
         arr = self.node.components[self.data_array]   # MemoryArray
-        slots: List[int] = [self._local_slot(q) for q in qs]
-
-        # Get the QState keys through the shared logical-qubit→key registry (see _key_for)
-        keys: List[int] = [self._key_for(q, arr) for q in qs]
+        slots = op.get("slots")
+        if not (slots and all(s is not None for s in slots)):
+            slots = [self._local_slot(q) for q in qs]
+        keys: List[int] = []
+        for q, s in zip(qs, slots):
+            k = arr.memories[s].qstate_key
+            keys.append(k)
+            if self.registry is not None:
+                self.registry.set_key(q, k)
 
         # slot -> local circuit index (0..len(slots)-1)
         slot_to_idx = {slot: i for i, slot in enumerate(slots)}
@@ -522,28 +529,34 @@ class TeleportationDQCProgram(DQCProgram):
             return False
         ctrl_q, tgt_q = qs
         peer = self.qubit_to_node[tgt_q]
+        # Concrete slots resolved by the controller from the registry (fall back to local
+        # resolution for hand-crafted tests / no registry).
+        ctrl_slot = op.get("ctrl_slot")
+        tgt_slot = op.get("tgt_slot")
         if self.node.name == self.qubit_to_node[ctrl_q]:
             self.node.bind_app_peer(peer, self.tgate)   # telegate reservation callbacks -> tgate
             self._defer(step)
-            self._start_telegate_control(op, ctrl_q, self._local_slot(ctrl_q), peer, tgt_q, step=step)
+            cs = ctrl_slot if ctrl_slot is not None else self._local_slot(ctrl_q)
+            ts = tgt_slot if tgt_slot is not None else self._remote_slot(peer, tgt_q)
+            self._start_telegate_control(op, ctrl_q, cs, peer, tgt_q, step=step, tgt_slot=ts)
             return True
         if self.node.name == peer:
             self.node.bind_app_peer(self.qubit_to_node[ctrl_q], self.tgate)   # incoming from the control node
-            self._lock_target_slot(tgt_q, step)
+            self._lock_target_slot(tgt_q, step, slot=tgt_slot)
             self._defer(step)
             return True
         return False
 
-    def _lock_target_slot(self, tgt_q: int, step: int) -> None:
+    def _lock_target_slot(self, tgt_q: int, step: int, slot: int = None) -> None:
         """Target side of a telegate: tell the TelegateApp which local data slot to
-        land the corrected qubit in for ``step``."""
+        land the corrected qubit in for ``step`` (``slot`` resolved by the controller)."""
         self.tgate._current_step = step
-        self.tgate.set_target_slot_for_step(step, self._local_slot(tgt_q))
+        self.tgate.set_target_slot_for_step(step, slot if slot is not None else self._local_slot(tgt_q))
 
     def _start_telegate_control(self, op: Dict[str, Any],
                                 ctrl_q: int, ctrl_slot: int,
                                 peer_nm: str, tgt_q: int,
-                                step: int) -> None:
+                                step: int, tgt_slot: int = None) -> None:
         """Start a teleported CNOT where this node owns the control qubit.
 
         The target node locks its own local slot upon receiving the same
@@ -569,7 +582,8 @@ class TeleportationDQCProgram(DQCProgram):
 
         self.tgate._current_step = step
 
-        tgt_slot = self._remote_slot(peer_nm, tgt_q)
+        if tgt_slot is None:                            # controller usually resolves this
+            tgt_slot = self._remote_slot(peer_nm, tgt_q)
         t0, t1, mem_size, fidelity, hops = self._reservation_for(peer_nm)
 
         log.logger.info(f"Executing REMOTE gate={gate_typ} step={step} targets={op['targets']}; CONTROL on {self.node.name}(q={ctrl_q},slot={ctrl_slot},key={key}) → TARGET {peer_nm}(q={tgt_q},slot={tgt_slot}); hops={hops} mem_size={mem_size} fid={fidelity}; t=[{t0},{t1}]")
@@ -593,10 +607,12 @@ class TeleportationDQCProgram(DQCProgram):
         landing slot if it is being teleported to us. Returns True if we are a party.
         """
         q, dest, dest_slot = op["qubit"], op["dest"], op["dest_slot"]
+        src_slot = op.get("src_slot")                   # controller-resolved (fallback: local)
         if self.node.name == self.qubit_to_node[q]:
             self.node.bind_app_peer(dest, self.tdata)   # teledata reservation callbacks -> tdata
             self._defer(step)
-            self._start_teleport_source(q, self._local_slot(q), dest, dest_slot, step=step)
+            ss = src_slot if src_slot is not None else self._local_slot(q)
+            self._start_teleport_source(q, ss, dest, dest_slot, step=step)
             return True
         if self.node.name == dest:
             self.node.bind_app_peer(self.qubit_to_node[q], self.tdata)   # incoming from the source node
