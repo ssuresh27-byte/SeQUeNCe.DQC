@@ -633,8 +633,9 @@ class TeleportationDQCProgram(DQCProgram):
         step, q = self._expected_moves.pop(slot)
         self.qubit_to_node[q] = self.node.name   # shared dict -> visible everywhere
         self.data_owned[q] = slot                # this node's map == peer_slots[dest]
-        if self.registry is not None:            # shared logical-qubit->key view follows q here
-            self.registry.set_key(q, data_key)
+        if self.registry is not None:            # keep the controller's registry current: q's
+            self.registry.set_key(q, data_key)   #   key and its new physical location both moved
+            self.registry.place(q, self.node.name, slot)
         log.logger.info(f"[qpu_agent:{self.node.name}] MOVE arrived: q={q} now here at slot={slot} (step={step})")
         self._ack_deferred_unit(step)
 
