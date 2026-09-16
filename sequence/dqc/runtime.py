@@ -156,27 +156,32 @@ def run(circuit, topology, partitioner="topo-aware", scheduler="fgp", seed=0,
                 nd.register_qubits(qm)
             qm.noise_rng = np.random.default_rng(noise_seed)
 
-    def _attach_agents(qn, program, ctrl, hopmap):
-        """Install one TeleportationDQCProgram per DQC node (executes the controller's steps)."""
-        do = program.data_owners; ps = {nm: do[nm] for nm in qn}
-        for nm, nd in qn.items():
-            TeleportationDQCProgram(
-                node=nd, qubit_to_node=program.qubit_to_node,
-                local_ops=program.node_ops[nm]["local"], remote_ops=program.node_ops[nm]["remote"],
-                data_owned=do[nm], peer_slots=ps, controller_name=ctrl.name,
-                hop_distances=hopmap.get(nm, {}), reservation_policy=purification_policy,
-                move_ops=program.node_ops[nm].get("move", []))
+    def _attach_agents(qn, ctrl, hopmap):
+        """Install one TeleportationDQCProgram per DQC node (executes the controller's steps).
 
-    def _measure(qn, program, tl, rng):
-        """Read out the requested data qubits; return the packed measured bitstring."""
-        meas = {}
+        Agents are near-stateless executors -- they hold no placement/op state; each step's
+        ops arrive already resolved (role, peer, slots) in the controller's STEP_MESSAGE.
+        """
         for nm, nd in qn.items():
-            for gq, slot in program.data_owners[nm].items():
-                if gq not in data_qubits:
-                    continue
-                key = nd.get_component_by_name(nd.data_memo_arr_name)[slot].qstate_key
-                c = Circuit(1); c.measure(0)
-                meas[gq] = tl.quantum_manager.run_circuit(c, [key], rng.random())[key]
+            TeleportationDQCProgram(node=nd, controller_name=ctrl.name,
+                                    hop_distances=hopmap.get(nm, {}),
+                                    reservation_policy=purification_policy)
+
+    def _measure(qn, ctrl, tl, rng):
+        """Read out the requested data qubits; return the packed measured bitstring.
+
+        Final placement comes from the controller's registry (moves relocate qubits at
+        run time via ACK deltas), not the compile-time placement."""
+        reg = ctrl.registry
+        meas = {}
+        for gq in data_qubits:
+            nm, slot = reg.location(gq)
+            if nm is None or nm not in qn:
+                continue
+            nd = qn[nm]
+            key = nd.get_component_by_name(nd.data_memo_arr_name)[slot].qstate_key
+            c = Circuit(1); c.measure(0)
+            meas[gq] = tl.quantum_manager.run_circuit(c, [key], rng.random())[key]
         return sum(b << gq for gq, b in meas.items())
 
     def _one_shot(shot_rng, noise_seed):
@@ -192,10 +197,10 @@ def run(circuit, topology, partitioner="topo-aware", scheduler="fgp", seed=0,
             metrics = _program_metrics(program, net)
             _da.RESERVATION_SLACK_CC_MULT = 6 * max(metrics[2], 1)
             tl.stop_time = int((program.max_step + 16) * STOP_BUDGET * 8)
-            _attach_agents(qn, program, ctrl, net.hop_distances())
+            _attach_agents(qn, ctrl, net.hop_distances())
             tl.init(); ctrl.start_execution()
             t0 = time.time(); tl.run(); wall = time.time() - t0
-            measured = _measure(qn, program, tl, shot_rng)
+            measured = _measure(qn, ctrl, tl, shot_rng)
             return measured, ctrl.current, program, metrics, wall, tl.now() / 1e9
 
     # ── shot loop + result assembly ──────────────────────────────────────────

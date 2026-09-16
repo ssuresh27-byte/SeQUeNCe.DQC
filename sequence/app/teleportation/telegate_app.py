@@ -823,17 +823,9 @@ class TelegateApp(RequestApp):
         step = getattr(self, "_current_step", None)
         log.logger.info(f"[telegate:{self.node.name}] gate_complete called: role={role}, data_key={data_key}, step={step}")
 
-        # Emit completion directly to avoid circular calls
+        # Emit completion to any registered on_complete callbacks.
         log.logger.info(f"[telegate:{self.node.name}] Emitting completion for role={role}, data_key={data_key}, step={step}")
         self._emit_complete(role, data_key, step)
-
-        # Also call DQCApp completion callback if available
-        if hasattr(self.node, 'dqc_app') and self.node.dqc_app:
-            log.logger.info(f"[telegate:{self.node.name}] Calling DQCApp completion callback")
-            if hasattr(self.node.dqc_app, '_telegate_done'):
-                self.node.dqc_app._telegate_done(role, data_key, step)
-            else:
-                log.logger.warning(f"[telegate:{self.node.name}] DQCApp has no _telegate_done method")
 
     def telegate_complete(self, data_key: int, role: str = "unknown"):
         """Handle telegate operation completion.

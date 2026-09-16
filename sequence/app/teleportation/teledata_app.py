@@ -247,9 +247,14 @@ class TeledataApp(RequestApp):
 
         # Optional callback fired on the INITIATOR (Alice) once Bob acknowledges a
         # completed teleport -- i.e. the moved state is now in Bob's data memory and
-        # this session's resources are released. DQCApp uses it to drive the barrier
-        # ACK / free the source slot. Signature: on_source_complete(protocol).
+        # this session's resources are released. The QPU agent uses it to drive the
+        # barrier ACK / free the source slot. Signature: on_source_complete(protocol).
         self.on_source_complete: Optional[callable] = None
+
+        # Optional callback fired on the RESPONDER (Bob) once the teleported state
+        # has landed in local data memory (end of teledata_complete). Mirrors
+        # on_source_complete for the destination side. Signature: on_complete(data_key).
+        self.on_complete: Optional[callable] = None
 
         log.logger.debug(f"[TeledataApp:{node.name}] initialized")
 
@@ -414,6 +419,9 @@ class TeledataApp(RequestApp):
         log.logger.info(f"{self.name}: teledata done, state={psi}")
         self.data_keys.append(data_key)
         self.results.append(psi)
+
+        if self.on_complete is not None:
+            self.on_complete(data_key)
 
     # ── early expire: release resources the instant a teleport completes, and
     #    make the base class's end_time cleanup reservation-aware, so back-to-back
