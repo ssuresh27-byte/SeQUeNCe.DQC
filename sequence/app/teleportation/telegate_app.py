@@ -336,11 +336,11 @@ class TelegateProtocol(TeleportationProtocol):
         # Inform the app that the distributed CNOT has been effected
         role = "alice" if self.alice else "bob"
         log.logger.debug(f"[telegate_protocol:{self.owner.name}] Calling telegate_complete with target_key={target_key}, role={role}")
-        self.owner.telegate_app.telegate_complete(target_key, role)
+        self.owner.app.telegate_complete(target_key, role)
 
         # Remove this protocol from the list after completion
-        if self in self.owner.telegate_app.telegate_protocols:
-            self.owner.telegate_app.telegate_protocols.remove(self)
+        if self in self.owner.app.telegate_protocols:
+            self.owner.app.telegate_protocols.remove(self)
             log.logger.debug(f"[telegate_protocol:{self.owner.name}] Protocol removed from list after completion")
 
         log.logger.info(f"[telegate_protocol:{self.owner.name}] _bob_stage_with_a completed successfully")
@@ -378,11 +378,11 @@ class TelegateProtocol(TeleportationProtocol):
 
         # Complete as alice (initiator/control owner)
         log.logger.debug(f"[telegate_protocol:{self.owner.name}] Calling telegate_complete with ctrl_key={ctrl_key}, role=alice")
-        self.owner.telegate_app.telegate_complete(ctrl_key, role="alice")
+        self.owner.app.telegate_complete(ctrl_key, role="alice")
 
         # Remove this protocol from the list after completion
-        if self in self.owner.telegate_app.telegate_protocols:
-            self.owner.telegate_app.telegate_protocols.remove(self)
+        if self in self.owner.app.telegate_protocols:
+            self.owner.app.telegate_protocols.remove(self)
             log.logger.debug(f"[telegate_protocol:{self.owner.name}] Protocol removed from list after completion")
 
         log.logger.info(f"[telegate_protocol:{self.owner.name}] alice_z_correction completed successfully")
@@ -458,7 +458,7 @@ class TelegateApp(RequestApp):
         """
         super().__init__(node)
         self.name = "telegate_app"
-        node.telegate_app = self
+        node.app = self   # single app-callback slot (see DQCNode / TeleportationApp)
 
         # Results/keys for debugging or tests
         self.results: List = []
@@ -470,8 +470,12 @@ class TelegateApp(RequestApp):
         # Completion callbacks: cb(role:str, data_key:int, step:Optional[int])
         self._complete_cbs: List[Callable] = []
 
-        # Optional: target-owner can predeclare the exact target data slot per step
-        # so responder picks the same local slot DQCApp locked
+        # Target-owner predeclares the exact target data slot for an incoming telegate so the
+        # responder lands the corrected qubit in the same slot the controller assigned. Keyed by
+        # the session's reservation IDENTITY (concurrency-safe: two telegates to this node in one
+        # wave get distinct slots). ``_target_slot_by_step`` + ``_current_step`` are the legacy
+        # step-keyed fallback the standalone tests still use (no controller to assign identities).
+        self._target_slot_by_identity: Dict[int, int] = {}
         self._target_slot_by_step: Dict[int, int] = {}
         self._current_step: Optional[int] = None
 
@@ -554,6 +558,18 @@ class TelegateApp(RequestApp):
         """
         self._current_step = int(step)
 
+    def set_target_slot(self, identity: int, slot: int):
+        """Predeclare the target data slot for the telegate session ``identity`` (responder side).
+
+        Preferred over :meth:`set_target_slot_for_step`: keyed by the unique reservation identity,
+        so a node that is the target of several telegates in one wave lands each in its own slot.
+
+        Args:
+            identity (int): reservation identity of the incoming telegate session.
+            slot (int): local data-memory slot for the corrected target qubit.
+        """
+        self._target_slot_by_identity[int(identity)] = int(slot)
+
     def start(self, responder: str, start_t: int, end_t: int, memory_size: int, fidelity: float,
               control_src: int, target_src: int, step: Optional[int] = None, gate_type: str = "cx",
               identity: int = 0):
@@ -574,7 +590,7 @@ class TelegateApp(RequestApp):
                 sessions route back to this app on both endpoints.
         """
         # Reserve entanglement window
-        super().start(responder, start_t, end_t, memory_size, fidelity, identity=identity)
+        RequestApp.start(self, responder, start_t, end_t, memory_size, fidelity, identity=identity)
 
         # Create Alice-side protocol on the initiator (control owner)
         log.logger.info(f"[telegate:{self.node.name}] Creating Alice protocol with remote_node_name={responder}, gate_type={gate_type}")
@@ -596,7 +612,7 @@ class TelegateApp(RequestApp):
             reservation: Network reservation object
             result: Whether the reservation was successful
         """
-        super().get_reservation_result(reservation, result)
+        RequestApp.get_reservation_result(self, reservation, result)
 
     def get_memory(self, info):
         """Handle memory entanglement events.
@@ -659,12 +675,15 @@ class TelegateApp(RequestApp):
 
         # Target side → Bob-role (CNOT comm → target, H, measure, X-correct).
         if this_node == target_node:
-            step = getattr(self, "_current_step", None)
-            if not isinstance(step, int) or step not in self._target_slot_by_step:
-                log.logger.error(f"[TelegateApp:{this_node}] missing target slot for step={step}; did DQCApp.set_target_slot_for_step(step, slot) run on TARGET?")
+            # Prefer the identity-keyed slot (controller-assigned, concurrency-safe); fall back to
+            # the legacy step-keyed slot for standalone tests that have no session identities.
+            target_slot = self._target_slot_by_identity.get(identity)
+            if target_slot is None:
+                step = getattr(self, "_current_step", None)
+                target_slot = self._target_slot_by_step.get(step) if isinstance(step, int) else None
+            if target_slot is None:
+                log.logger.error(f"[TelegateApp:{this_node}] missing target slot for identity={identity} / step={getattr(self, '_current_step', None)}; did set_target_slot run on TARGET?")
                 raise RuntimeError("Responder target slot not specified")
-
-            target_slot = self._target_slot_by_step[step]
             log.logger.info(f"[telegate:{self.node.name}] Creating Bob protocol with remote_node_name={control_node}")
             protocol = TeleportationProtocol.create(owner=self.node, alice=False, control_memory_index=None,
                                                     target_memory_index=target_slot, remote_node_name=control_node, protocol_type=TELEGATE)

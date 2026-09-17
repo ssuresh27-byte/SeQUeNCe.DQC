@@ -867,9 +867,9 @@ class DQCNode(QuantumRouter):
         t2 (float | None): dephasing time in seconds (None = off).
 
         data_memo_arr_name (str): name of the data memory array.
-        teleport_app (TeleportApp): The teleportation application instance.
-        teledata_app (TeledataApp): The teledata application instance.
-        telegate_app (TelegateApp): The telegate application instance.
+        teleport_app (TeleportApp): the bare state-teleport app (its own slot).
+        app (App): the single app-callback slot -- holds the unified
+            :class:`~sequence.app.teleportation.TeleportationApp` (telegate + teledata) on a DQC run.
 
     Note:
         ``one_qubit_gate_fid``/``two_qubit_gate_fid``/``measurement_fid``/``t1``/``t2``
@@ -899,14 +899,14 @@ class DQCNode(QuantumRouter):
         data_memo_arr_args = component_templates.get("DataMemoryArray", {})
         data_memory_array = MemoryArray(self.data_memo_arr_name, timeline, data_memo_size, **data_memo_arr_args)
         self.add_component(data_memory_array)
+        # Bare state-teleport app keeps its own slot; telegate/teledata (and the unified
+        # TeleportationApp) live in the standard ``self.app`` slot and are addressed by name below.
         self.teleport_app: TeleportApp = None
-        self.teledata_app = None
-        self.telegate_app = None
 
     def receive_message(self, src: str, msg: "Message") -> None:
         """Dispatch a received classical message by ``msg.receiver``: the network/resource
-        manager, one of the teleportation apps (which register their name on the node), or a
-        named/typed protocol. Extends QuantumRouter's routing with the teleport apps."""
+        manager, a teleportation app, or a named/typed protocol. The telegate/teledata apps live
+        in the single ``self.app`` slot, so their direct app-to-app messages route there."""
         if self.down:
             log.logger.debug(f"{self.name} is DOWN. Dropping message {msg} from {src}")
             return
@@ -917,10 +917,8 @@ class DQCNode(QuantumRouter):
             self.resource_manager.received_message(src, msg)
         elif msg.receiver == "teleport_app":
             self.teleport_app.received_message(src, msg)
-        elif msg.receiver == "teledata_app":
-            self.teledata_app.received_message(src, msg)
-        elif msg.receiver == "telegate_app":
-            self.telegate_app.received_message(src, msg)
+        elif msg.receiver in ("telegate_app", "teledata_app"):
+            self.app.received_message(src, msg)
         else:
             if msg.receiver is None:   # EntanglementGenerationB messages carry no receiver
                 matching = [p for p in self.protocols if p.protocol_type == msg.protocol_type]

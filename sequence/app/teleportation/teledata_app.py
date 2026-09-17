@@ -210,7 +210,7 @@ class TeledataProtocol(TeleportationProtocol):
         self.bob_comm_memory.reset()
 
         # Notify app that the teleported state is now in the data memory
-        self.owner.teledata_app.teledata_complete(bob_data_memory_key)
+        self.owner.app.teledata_complete(bob_data_memory_key)
 
     def bob_acknowledge_complete(self, reservation: Reservation):
         """Send an ACK back to Alice so she can release the session's resources.
@@ -237,7 +237,7 @@ class TeledataApp(RequestApp):
         """
         super().__init__(node)
         self.name = "teledata_app"
-        node.teledata_app = self
+        node.app = self   # single app-callback slot (see DQCNode / TeleportationApp)
 
         self.results: List = []
         self.data_keys: List[int] = []
@@ -279,7 +279,7 @@ class TeledataApp(RequestApp):
         log.logger.debug(f"[TeledataApp:{self.node.name}] start() → responder={responder}, data_src={data_src}, dest_slot={dest_slot}")
 
         # Reserve and generate EPR pair(s)
-        super().start(responder, start_t, end_t, memory_size, fidelity, identity=identity)
+        RequestApp.start(self, responder, start_t, end_t, memory_size, fidelity, identity=identity)
 
         # Create a new protocol instance for Alice
         protocol = TeleportationProtocol.create(owner=self.node, alice=True, data_memory_index=data_src,
@@ -295,7 +295,7 @@ class TeledataApp(RequestApp):
             reservation (Reservation): the reservation object.
             result (bool): True if the reservation succeeded, False otherwise.
         """
-        super().get_reservation_result(reservation, result)
+        RequestApp.get_reservation_result(self, reservation, result)
         log.logger.debug(f"[TeledataApp:{self.node.name}] reservation_result → {result}")
 
     def get_memory(self, info: MemoryInfo):
