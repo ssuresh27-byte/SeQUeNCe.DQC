@@ -1,4 +1,4 @@
-"""Teledata protocol and app.
+"""Teledata protocol and messages.
 
 Teledata teleports a data qubit onto a remote node: Alice Bell-measures her data
 qubit against her half of the pair and sends the classical bits; Bob applies the
@@ -6,8 +6,8 @@ Pauli corrections to his comm memory and then SWAPs the recovered state into his
 data memory.
 
 Ported from the DQC ``teledata`` package, re-expressed as a
-:class:`TeleportationProtocol` registered under ``TELEDATA`` and grouped with its
-:class:`TeledataApp`. Mirrors the teleport protocol/app pair.
+:class:`TeleportationProtocol` registered under ``TELEDATA``. The app that drives it is the
+unified :class:`~sequence.app.teleportation.teleportation_app.TeleportationApp` (teledata half).
 """
 
 from enum import Enum, auto

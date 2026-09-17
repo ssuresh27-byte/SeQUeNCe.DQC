@@ -30,9 +30,9 @@ from ...utils import log
 from ...constants import TELEGATE, TELEDATA, TELEPORT
 
 from .teleportation_base import TeleportationProtocol
-from .telegate_app import TelegateMsgType
-from .teledata_app import TeledataMsgType, TeledataMessage
-from .teleport_app import TeleportMsgType, TeleportMessage
+from .telegate_protocol import TelegateMsgType
+from .teledata_protocol import TeledataMsgType, TeledataMessage
+from .teleport_protocol import TeleportMsgType, TeleportMessage
 
 
 class TeleportationApp(RequestApp):

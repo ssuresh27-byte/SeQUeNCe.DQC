@@ -1,7 +1,7 @@
 from .teleportation_base import TeleportationProtocol
-from .teleport_app import TeleportProtocol, TeleportMessage, TeleportMsgType
-from .teledata_app import TeledataProtocol, TeledataMessage, TeledataMsgType
-from .telegate_app import TelegateProtocol, TelegateMessage, TelegateMsgType
+from .teleport_protocol import TeleportProtocol, TeleportMessage, TeleportMsgType
+from .teledata_protocol import TeledataProtocol, TeledataMessage, TeledataMsgType
+from .telegate_protocol import TelegateProtocol, TelegateMessage, TelegateMsgType
 from .teleportation_app import TeleportationApp, TeleportApp, TelegateApp, TeledataApp
 
 __all__ = [

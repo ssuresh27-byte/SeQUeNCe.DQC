@@ -1,4 +1,4 @@
-"""Telegate (remote/distributed controlled-gate) protocol and app.
+"""Telegate (remote/distributed controlled-gate) protocol and messages.
 
 Implements an entanglement-assisted distributed controlled gate across two
 nodes. The gate is selectable via ``gate_type`` ("cx" for a remote CNOT, the
@@ -15,8 +15,8 @@ correction in step 4). Only Bob's local gate and his a-dependent target
 correction differ.
 
 Ported from the DQC ``telegate`` package, re-expressed as a
-:class:`TeleportationProtocol` registered under ``TELEGATE`` and grouped with its
-:class:`TelegateApp`. Mirrors the teleport protocol/app pair.
+:class:`TeleportationProtocol` registered under ``TELEGATE``. The app that drives it is the
+unified :class:`~sequence.app.teleportation.teleportation_app.TeleportationApp` (telegate half).
 """
 
 from __future__ import annotations
