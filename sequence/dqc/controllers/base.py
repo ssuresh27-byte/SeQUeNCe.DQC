@@ -30,9 +30,9 @@ def _session_identity(op) -> int:
 
     Uses the op-DAG op id (``op_id`` -- build_op_dag tags the SAME id onto both parties' copies of
     a remote/move op) offset by 1 so it is always >= 1 (identity 0 means "auto-assign" to the RSVP
-    layer). Both endpoints derive the same value from their own op copy, so each can bind
-    ``identity -> app`` before the reservation travels (see ``_DualAppRouter``). Falls back to a
-    deterministic hash of the op's defining fields if ``op_id`` is absent."""
+    layer). Both endpoints derive the same value from their own op copy, so each can declare the
+    session's kind by ``identity`` (via ``TeleportationApp.expect_session``) before the reservation
+    travels. Falls back to a deterministic hash of the op's defining fields if ``op_id`` is absent."""
     oid = op.get("op_id")
     if oid is not None:
         return oid + 1

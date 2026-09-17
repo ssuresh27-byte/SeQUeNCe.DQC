@@ -856,7 +856,7 @@ class DQCNode(QuantumRouter):
         memo_arr_name (str): name of the communication memory array (from QuantumRouter).
         resource_manager (ResourceManager): resource management module (from QuantumRouter).
         network_manager (NetworkManager): network management module (from QuantumRouter).
-        app (App): the single app-callback slot -- a ``_DualAppRouter`` on a DQC run.
+        app (App): the single app-callback slot -- a unified ``TeleportationApp`` on a DQC run.
 
         one_qubit_gate_fid (float): 1-qubit gate fidelity (default 1 = ideal) -- SAME name
             as the density-matrix manager's knob, so node and manager share one vocabulary.
