@@ -1,4 +1,4 @@
-__all__ = ["app", "random_request", "teleport_app", "request_app"]
+__all__ = ["app", "random_request", "request_app"]
 
 
 def __dir__():

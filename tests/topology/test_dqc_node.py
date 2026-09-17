@@ -148,25 +148,22 @@ def test_DQCNode_receive_message_dispatch_to_apps_and_managers():
 
     nm = Sink()
     rm = Sink()
-    ta = Sink()   # teleport_app (bare state teleport keeps its own slot)
-    app = Sink()  # the single app slot -- the unified telegate+teledata TeleportationApp
+    app = Sink()  # the single app slot -- the unified telegate+teledata+teleport TeleportationApp
 
     qn.network_manager = nm
     qn.resource_manager = rm
-    qn.teleport_app = ta
     qn.app = app
 
     qn.receive_message("peer", SimpleMsg("network_manager"))
     qn.receive_message("peer", SimpleMsg("resource_manager"))
-    qn.receive_message("peer", SimpleMsg("teleport_app"))
+    qn.receive_message("peer", SimpleMsg("teleport_app"))   # -> self.app
     qn.receive_message("peer", SimpleMsg("teledata_app"))   # -> self.app
     qn.receive_message("peer", SimpleMsg("telegate_app"))   # -> self.app
 
     assert len(nm.calls) == 1 and nm.calls[0][0] == "peer"
     assert len(rm.calls) == 1 and rm.calls[0][0] == "peer"
-    assert len(ta.calls) == 1 and ta.calls[0][0] == "peer"
-    # telegate_app + teledata_app messages both route to the single app slot
-    assert len(app.calls) == 2 and all(c[0] == "peer" for c in app.calls)
+    # teleport_app + telegate_app + teledata_app messages all route to the single app slot
+    assert len(app.calls) == 3 and all(c[0] == "peer" for c in app.calls)
 
 
 def test_DQCNode_receive_message_dispatch_to_named_protocol():

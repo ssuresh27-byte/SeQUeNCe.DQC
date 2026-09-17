@@ -27,11 +27,12 @@ from ...kernel.event import Event
 from ...resource_management.memory_manager import MemoryInfo
 from ...topology.node import DQCNode
 from ...utils import log
-from ...constants import TELEGATE, TELEDATA
+from ...constants import TELEGATE, TELEDATA, TELEPORT
 
 from .teleportation_base import TeleportationProtocol
 from .telegate_app import TelegateMsgType
 from .teledata_app import TeledataMsgType, TeledataMessage
+from .teleport_app import TeleportMsgType, TeleportMessage
 
 
 class TeleportationApp(RequestApp):
@@ -96,6 +97,10 @@ class TeleportationApp(RequestApp):
         # Maintain multiple concurrent teledata sessions.
         self.teledata_protocols: List = []
 
+        # ── Teleport (bare state-teleport) state ─────────────────────────────
+        # Multiple concurrent bare-teleport sessions.
+        self.teleport_protocols: List = []
+
         # Optional callback fired on the INITIATOR (Alice) once Bob acknowledges a
         # completed teleport -- i.e. the moved state is now in Bob's data memory and
         # this session's resources are released. The QPU agent uses it to drive the
@@ -143,7 +148,10 @@ class TeleportationApp(RequestApp):
         reservation = self.memo_to_reservation.get(info.index)
         if reservation is None:
             return
-        if self._kind_of(reservation) == TELEDATA:
+        kind = self._kind_of(reservation)
+        if kind == TELEPORT:
+            self._teleport_get_memory(info)
+        elif kind == TELEDATA:
             self._move_get_memory(info)
         else:
             self._gate_get_memory(info)
@@ -157,6 +165,8 @@ class TeleportationApp(RequestApp):
         """
         if isinstance(msg, TeledataMessage):
             self._move_received(src, msg)
+        elif isinstance(msg, TeleportMessage):
+            self._teleport_received(src, msg)
         else:
             self._gate_received(src, msg)
 
@@ -224,6 +234,28 @@ class TeleportationApp(RequestApp):
         # Where the state should land on the responder (defaults to the source index).
         protocol.dest_memory_index = data_src if dest_slot is None else dest_slot
         self.teledata_protocols.append(protocol)
+
+    def start_teleport(self, responder: str, start_t: int, end_t: int, memory_size: int, fidelity: float, data_memory_index: int):
+        """Start the teleportation process.
+
+        NOTE: only teleport one data memory qubit
+
+        Args:
+            responder (str): Name of the responder node (Bob).
+            start_t (int): Start time of the teleportation (in ps).
+            end_t (int): End time of the teleportation (in ps).
+            memory_size (int): Size of the memory used for the teleportation.
+            fidelity (float): Target fidelity of the teleportation.
+            data_memory_index (int): Index of the data qubit to be teleported.
+        """
+        log.logger.debug(f"{self.name}: start() → responder={responder}, data_memory_index={data_memory_index}")
+
+        # reserve and generate EPR pair
+        RequestApp.start(self, responder, start_t, end_t, memory_size, fidelity)
+
+        # init a new teleportation protocol for Alice only, and append to the list
+        teleport_protocol = TeleportationProtocol.create(self.node, alice=True, data_memory_index=data_memory_index, remote_node_name=responder, protocol_type=TELEPORT)
+        self.teleport_protocols.append(teleport_protocol)
 
     def get_reservation_result(self, reservation, result: bool):
         """Handle the reservation result from the network manager.
@@ -576,6 +608,82 @@ class TeleportationApp(RequestApp):
         if self.on_complete is not None:
             self.on_complete(data_key)
 
+    # ── teleport (bare state-teleport) half ──────────────────────────────────
+    def _teleport_get_memory(self, info: MemoryInfo):
+        """Handle memory state changes.
+
+        Args:
+            info (MemoryInfo): Information about the memory state change.
+        """
+        log.logger.debug(f"{self.name}: get_memory, name={info.memory.name}, state={info.state}")
+        # once we see our entangled half, hand it to the protocol
+        if info.index in self.memo_to_reservation:
+            if info.state == "ENTANGLED":
+                for teleport_protocol in self.teleport_protocols:
+                    this_node = info.memory.owner.name
+                    remote_node = info.remote_node
+                    if this_node == teleport_protocol.owner.name and remote_node == teleport_protocol.remote_node_name:
+                        # this node is Alice
+                        teleport_protocol.set_alice_comm_memory_name(info.memory.name)
+                        teleport_protocol.set_alice_comm_memory(info.memory)
+                        teleport_protocol.set_bob_comm_memory_name(info.remote_memo)
+                        reservation = self.memo_to_reservation[info.index]
+                        # Let Bob first execute EntanglementGenerationA._entanglement_succeed(), then let Alice do the Bell measurement
+                        time_now = self.node.timeline.now()
+                        process = Process(teleport_protocol, 'alice_bell_measurement', [reservation])
+                        priority = self.node.timeline.schedule_counter
+                        event = Event(time_now, process, priority)
+                        self.node.timeline.schedule(event)
+                        break  # if no matching protocol found, go to else clause
+                else:
+                    # this node is Bob, create the new teleport protocol instance, then append to self.teleport_protocols
+                    teleport_protocol = TeleportationProtocol.create(self.node, alice=False, remote_node_name=info.remote_node, protocol_type=TELEPORT)
+                    teleport_protocol.set_bob_comm_memory_name(info.memory.name)
+                    teleport_protocol.set_bob_comm_memory(info.memory)
+                    teleport_protocol.set_alice_comm_memory_name(info.remote_memo)
+                    self.teleport_protocols.append(teleport_protocol)
+
+    def _teleport_received(self, src: str, msg):
+        """Handle incoming teleport messages.
+
+        Args:
+            src (str): Source node name.
+            msg (TeleportMessage): The teleport message received.
+        """
+        log.logger.debug(f"{self.name} received_message from {src}: {msg}")
+        if msg.msg_type is TeleportMsgType.MEASUREMENT_RESULT:  # Bob receives measurement result from Alice
+            for teleport_protocol in self.teleport_protocols:   # find the correct teleport protocol on Bob's side
+                if src == teleport_protocol.remote_node_name and msg.bob_comm_memory_name == teleport_protocol.bob_comm_memory_name:
+                    teleport_protocol.received_message(src, msg)
+                    self.node.resource_manager.expire_rules_by_reservation(msg.reservation)                    # early release of resources
+                    self.node.resource_manager.update(None, teleport_protocol.bob_comm_memory, MemoryInfo.RAW)  # release the bob comm memory
+                    teleport_protocol.bob_acknowledge_complete(msg.reservation)
+                    self.teleport_protocols.remove(teleport_protocol)  # remove the protocol instance, it's lifecycle is complete
+                    break
+            else:
+                log.logger.warning(f"{self.name}: received_message: no matching teleport protocol for msg={msg} from {src}")
+
+        elif msg.msg_type is TeleportMsgType.ACK:              # Alice receives acknowledgment from Bob
+            for teleport_protocol in self.teleport_protocols:  # find the correct teleport protocol on Alice's side
+                if src == teleport_protocol.remote_node_name and msg.bob_comm_memory_name == teleport_protocol.bob_comm_memory_name:
+                    self.node.resource_manager.expire_rules_by_reservation(msg.reservation)                      # expire the rules
+                    self.node.resource_manager.update(None, teleport_protocol.alice_comm_memory, MemoryInfo.RAW)  # release the alice comm memory
+                    self.teleport_protocols.remove(teleport_protocol)  # remove the protocol instance, it's lifecycle is complete
+                    break
+            else:
+                log.logger.warning(f"{self.name}: received_message: no matching teleport protocol for msg={msg} from {src}")
+
+    def teleport_complete(self, comm_key: int):
+        """Called by TeleportProtocol once Bob's qubit is corrected. comm_key holds the teleported |ψ⟩.
+
+        Args:
+            comm_key (int): The key of the comm memory where the teleported state is stored.
+        """
+        my_qubit = self.node.timeline.quantum_manager.get(comm_key)
+        psi = my_qubit.state  # get qubit state
+        log.logger.info(f"{self.name}: teleport done, state={psi}")
+        self.results.append((self.node.timeline.now(), psi))  # append result (timestamp, state)
+
     # ── shared plumbing (telegate versions -- supersets of the teledata ones) ─
     def remove_memo_reservation_map(self, index: int) -> None:
         """Idempotent override of the base-class removal (pop with a default so a
@@ -703,6 +811,25 @@ class TeleportationApp(RequestApp):
             for node_name in path[1:-1]:
                 log.logger.info(f"[telegate:{self.node.name}] sending EARLY_EXPIRE to intermediate node {node_name}")
                 self.node.resource_manager.expire_remote_rules(node_name, reservation)
+
+
+class TeleportApp(TeleportationApp):
+    """Thin single-kind app for standalone bare-teleport tests (pins ``TELEPORT``)."""
+
+    DEFAULT_KIND = TELEPORT
+
+    def __init__(self, node: DQCNode):
+        """Initialize a bare state-teleport application.
+
+        Args:
+            node (DQCNode): the DQCNode that owns this app.
+        """
+        super().__init__(node)
+        self.name = "teleport_app"
+
+    def start(self, *args, **kwargs):
+        """Initiate a bare state teleport (sender). See :meth:`TeleportationApp.start_teleport`."""
+        return self.start_teleport(*args, **kwargs)
 
 
 class TelegateApp(TeleportationApp):
