@@ -126,9 +126,13 @@ def run(circuit, topology, partitioner="topo-aware", scheduler="fgp", seed=0,
         raise ValueError(f"formalism must be 'ket' or 'density', got {formalism!r}.")
     n = circuit.size
     data_qubits = set(range(n) if data_qubits is None else data_qubits)
-    # Noise is active iff the topology declares any per-node local noise; it selects the
-    # noise-aware quantum manager and is applied natively (each DQCNode self-registers).
-    noise_active = any(_spec_noisy(p) for p in getattr(topology, "node_noise", {}).values())
+    # Noise is active iff any node declares a non-ideal gate/measurement fidelity or a T1/T2 time.
+    # Computed here (before the nodes exist) straight off the per-node config specs; it selects the
+    # noise-aware quantum manager (vs the faster pristine one), applied natively per DQCNode.
+    noise_active = any(
+        p.get("one_qubit_gate_fid", 1.0) < 1.0 or p.get("two_qubit_gate_fid", 1.0) < 1.0
+        or p.get("measurement_fid", 1.0) < 1.0 or p.get("t1") is not None or p.get("t2") is not None
+        for p in getattr(topology, "node_noise", {}).values())
     _dumped = {"done": False}
 
     def _build_config():
@@ -225,10 +229,3 @@ def run(circuit, topology, partitioner="topo-aware", scheduler="fgp", seed=0,
     else:
         result["ok"] = (expected is not None and measured == expected and reached >= program.max_step)
     return result
-
-
-def _spec_noisy(p: dict) -> bool:
-    """True if a per-node noise spec declares any non-ideal fidelity or a T1/T2 time."""
-    return (p.get("one_qubit_gate_fid", 1.0) < 1.0 or p.get("two_qubit_gate_fid", 1.0) < 1.0
-            or p.get("measurement_fid", 1.0) < 1.0 or p.get("t1") is not None
-            or p.get("t2") is not None)
