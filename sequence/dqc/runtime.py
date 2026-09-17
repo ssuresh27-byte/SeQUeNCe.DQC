@@ -28,7 +28,6 @@ import sequence.dqc.dqc_program as _da
 from sequence.topology.dqc_net_topo import DQCNetTopo
 from sequence.components.circuit import Circuit
 
-from sequence.dqc.compilers import build_compiler
 from sequence.dqc.dqc_program import TeleportationDQCProgram
 from sequence.constants import KET_VECTOR_FORMALISM, DENSITY_MATRIX_FORMALISM
 from sequence.dqc.noise import KET_VECTOR_NOISE_FORMALISM, DENSITY_MATRIX_NOISE_FORMALISM
@@ -80,14 +79,6 @@ def _program_metrics(program, topology):
     n_moves = len(seen_mv)
     max_hop = max([max((h for h in hist if h > 0), default=0)] + mv_hops)
     return n_tele, n_moves, max_hop, dict(sorted(hist.items()))
-
-
-def compile_program(circuit, topology, partitioner="topo-aware", scheduler="fgp", seed=0):
-    """Compile ``circuit`` on ``topology`` into a CompiledProgram (no simulation) --
-    the same compile the controller runs on start. ``scheduler="fgp"`` selects the
-    monolithic hybrid (seeded by ``partitioner``); any other selects a static
-    partitioner+scheduler pipeline."""
-    return build_compiler(partitioner, scheduler).compile(circuit, topology, seed=seed)
 
 
 def run(circuit, topology, partitioner="topo-aware", scheduler="fgp", seed=0,
