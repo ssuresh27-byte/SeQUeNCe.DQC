@@ -843,12 +843,12 @@ class DQCNode(QuantumRouter):
 
     Inherits from :class:`QuantumRouter` (comm-memory array + :class:`ResourceManager` +
     :class:`NetworkManager` + BSM routing + the single ``self.app`` callback slot), and adds a
-    data-memory array for computational qubits plus per-node local-noise knobs. To run a telegate
-    AND a teledata app on one node through that single ``self.app`` slot, the worker registers a
-    small :class:`~sequence.dqc.dqc_program._DualAppRouter` as ``self.app``; it fans each
-    reservation/memory callback to the right sub-app -- reservation results by the reservation's
-    unique ``identity`` (assigned by the controller, so both endpoints agree), entangled memories
-    by memory index. Each sub-app then multiplexes its own concurrent sessions internally.
+    data-memory array for computational qubits plus per-node local-noise knobs. All teleportation
+    apps live in that single ``self.app`` slot: the worker installs one unified
+    :class:`~sequence.app.teleportation.TeleportationApp`, which runs teleport / telegate / teledata
+    sessions together -- dispatching each by its (controller-assigned, per-endpoint-agreed)
+    reservation ``identity`` and multiplexing concurrent sessions internally. ``receive_message``
+    routes the ``teleport_app``/``telegate_app``/``teledata_app`` wire messages to ``self.app``.
 
     Attributes:
         name (str): Name of the quantum node.
