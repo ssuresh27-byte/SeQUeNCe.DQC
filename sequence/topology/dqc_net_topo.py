@@ -106,23 +106,21 @@ class DQCNetTopo(Topo):
             self.nodes[node_type].append(node_obj)
 
     def _build_controller(self, node: dict):
-        """Build the central controller from its config entry (policy + named compiler).
+        """Build the central controller (a pure executor) from its config entry's ``policy``.
 
-        Lazy-imports the DQC controllers/compilers so the topology package doesn't take a
-        module-level dependency on :mod:`sequence.dqc`. A custom compiler OBJECT can't be
-        expressed in the JSON config; pass it to the runtime to override the built one.
+        Lazy-imports the DQC controllers so the topology package doesn't take a module-level
+        dependency on :mod:`sequence.dqc`. Compilation lives OUTSIDE the controller: the runtime
+        builds the compiler (from ``partitioner``/``scheduler``, or a custom object) and installs
+        the resulting program via ``controller.load``. The config's ``compiler`` spec is retained
+        only for reproducibility (it is written to a dumped config), not used here.
         """
         from sequence.dqc.controllers.barrier import BarrierController
         from sequence.dqc.controllers.adaptive_central_node import AdaptiveController
-        from sequence.dqc.compilers import build_compiler
         policies = {"barrier": BarrierController, "adaptive": AdaptiveController}
         policy = node.get("policy", "barrier")
         if policy not in policies:
             raise ValueError(f"Unknown controller policy '{policy}' (use {list(policies)})")
-        spec = node.get("compiler", {}) or {}
-        compiler = build_compiler(spec.get("partitioner", "topo-aware"),
-                                  spec.get("scheduler", "fgp"))
-        return policies[policy](node[Topo.NAME], self.tl, compiler=compiler)
+        return policies[policy](node[Topo.NAME], self.tl)
 
     def _add_bsm_node_to_router(self):
         for bsm in self.bsm_to_router_map:

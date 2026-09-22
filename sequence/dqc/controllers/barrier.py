@@ -3,14 +3,13 @@
 
 The controller is a :class:`~sequence.topology.node.ClassicalNode`: it exchanges
 classical messages with the DQC nodes over classical channels (so it can only
-reach nodes it is connected to), instead of calling their methods directly. It
-owns the compiler + scheduler and, on start, RUNS them to produce the
-:class:`~program.CompiledProgram`; then it drives the execution barrier --
-broadcast a step to every node, wait for all ACKs (delivered over channels),
-advance (charging ``dt`` to telegate/teledata steps, ``local_dt`` to local-only
-steps), until the program's last step.
+reach nodes it is connected to), instead of calling their methods directly. It is
+handed a pre-compiled :class:`~program.CompiledProgram` (via :meth:`~base.BaseController.load`)
+and drives the execution barrier -- broadcast a step to every node, wait for all
+ACKs (delivered over channels), advance (charging ``dt`` to telegate/teledata steps,
+``local_dt`` to local-only steps), until the program's last step.
 
-Shared plumbing (classical-node wiring, ``compile`` / ``set_nodes``, the DQC-app
+Shared plumbing (classical-node wiring, ``load`` / ``set_nodes``, the DQC-app
 messaging primitives) lives in :class:`~base.BaseController`; this class adds the
 lock-step barrier policy.
 """
@@ -35,9 +34,9 @@ class BarrierController(BaseController):
     constructor arguments and shared state.
     """
 
-    def __init__(self, name: str, timeline, compiler=None,
+    def __init__(self, name: str, timeline,
                  dt: float = 0.0, local_dt: float = None):
-        super().__init__(name, timeline, compiler=compiler, dt=dt, local_dt=local_dt)
+        super().__init__(name, timeline, dt=dt, local_dt=local_dt)
         self.waiting = set()                      # names of nodes not yet ACKed this step
 
     # ── barrier: receive ACKs over the channel, advance when all in ──────────

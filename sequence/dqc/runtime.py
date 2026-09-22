@@ -29,6 +29,7 @@ from sequence.topology.dqc_net_topo import DQCNetTopo
 from sequence.components.circuit import Circuit
 
 from sequence.dqc.dqc_program import TeleportationDQCProgram
+from sequence.dqc.compilers import build_compiler
 from sequence.constants import KET_VECTOR_FORMALISM, DENSITY_MATRIX_FORMALISM
 from sequence.dqc.noise import KET_VECTOR_NOISE_FORMALISM, DENSITY_MATRIX_NOISE_FORMALISM
 
@@ -179,10 +180,13 @@ class _Run:
         with contextlib.redirect_stdout(io.StringIO()):
             net = DQCNetTopo(config); tl = net.tl; qm = tl.quantum_manager
             qn = {node.name: node for node in net.nodes[DQCNetTopo.DQC_NODE]}
-            ctrl = net.controller                       # built + wired by DQCNetTopo from the config
-            if self.compiler is not None:               # a custom compiler object overrides the named one
-                ctrl.compiler = self.compiler
-            program = ctrl.compile(self.circuit, net, seed=self.seed)   # compiler queries net; seeds registry
+            ctrl = net.controller                       # a bare executor built + wired by DQCNetTopo
+            # Compilation lives here, not in the controller: build the compiler (a custom object
+            # overrides the named partitioner/scheduler), run it against the live net, and install
+            # the resulting plan into the controller (which seeds its registry from it).
+            compiler = self.compiler or build_compiler(self.partitioner, self.scheduler)
+            program = compiler.compile(self.circuit, net, seed=self.seed)
+            ctrl.load(program)
             self._register_noise(qn, qm, noise_seed)
             metrics = _program_metrics(program, net)
             _da.RESERVATION_SLACK_CC_MULT = 6 * max(metrics[2], 1)

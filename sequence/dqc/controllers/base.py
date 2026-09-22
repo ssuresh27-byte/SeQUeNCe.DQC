@@ -2,13 +2,15 @@
 """Shared controller plumbing for driving the per-node DQC apps.
 
 A DQC controller is a :class:`~sequence.topology.node.ClassicalNode` wired into the
-network topology: it owns the compiler (circuit + topology -> CompiledProgram) and
-talks to each node's DQC app (:class:`~sequence.dqc.dqc_program.DQCProgram`) purely
-over classical channels -- broadcasting *step* messages and hearing back *ACK*
-messages, never calling node methods directly.
+network topology: it holds a compiled program (:class:`~program.CompiledProgram`,
+installed via :meth:`~BaseController.load`) and drives it, talking to each node's DQC
+app (:class:`~sequence.dqc.dqc_program.DQCProgram`) purely over classical channels --
+broadcasting *step* messages and hearing back *ACK* messages, never calling node
+methods directly. Compilation happens OUTSIDE the controller (the runner owns the
+compiler and runs it); the controller is a pure executor of the resulting plan.
 
 :class:`BaseController` factors out everything that is NOT an orchestration policy:
-the classical-node wiring + shared run state, ``compile`` / ``set_nodes``, and the
+the classical-node wiring + shared run state, ``load`` / ``set_nodes``, and the
 two primitives for talking to a DQC app -- :meth:`send_step` (dispatch one step to
 one node) and :meth:`_is_ack` (recognise a step-completion ACK). What it deliberately
 leaves to subclasses is *when* steps are sent and *how* completions advance the run:
@@ -52,23 +54,19 @@ class BaseController(ClassicalNode):
     Args:
         name (str): controller node name (message sender label + channel key).
         timeline (Timeline): the network timeline (from ``DQCNetTopo``).
-        compiler: a compiler (``compilers`` package) -- circuit+topology -> program.
-            Either a static BasicCompiler (partitioner + scheduler) or the monolithic
-            FGPCompiler. Run once at :meth:`compile`.
         dt (float): delay after a network (telegate/teledata) step before the next
             dispatch.
         local_dt (float): delay after a local-only step (default ``dt``; ~0 so sim-time
             reflects real network cost rather than a flat local-gate barrier).
     """
 
-    def __init__(self, name: str, timeline, compiler=None,
+    def __init__(self, name: str, timeline,
                  dt: float = 0.0, local_dt: float = None):
         super().__init__(name, timeline)          # ClassicalNode -> registers on timeline
-        self.compiler = compiler
         self.dt = dt
         self.local_dt = dt if local_dt is None else local_dt
 
-        # filled by compile() / set_nodes()
+        # filled by load() / set_nodes()
         self.program = None
         self.max_step = -1
         self.net_layers = set()
@@ -79,15 +77,24 @@ class BaseController(ClassicalNode):
         self.current = 0                          # highest completed step + 1
         self._completed = False
 
-    # ── compile: run the compiler this controller owns ───────────────────────
-    def compile(self, circuit, topology, seed: int = 0):
-        """Compile ``circuit`` on ``topology`` into the full plan (CompiledProgram)."""
-        self.program = self.compiler.compile(circuit, topology, seed=seed)
-        self.max_step = self.program.max_step
-        self.net_layers = self.program.net_layers
+    # ── load: install a pre-compiled program (produced by the runner) ─────────
+    def load(self, program):
+        """Install a compiled ``program`` to execute and prepare the controller's run state.
+
+        Compilation happens OUTSIDE the controller: the runner builds the compiler, runs it
+        (``compiler.compile(circuit, topology, seed)``), and hands the resulting plan here. The
+        controller is a pure executor -- it seeds the registry from the program's initial
+        placement and lets subclasses derive extra plan state, but never compiles itself.
+
+        Args:
+            program (CompiledProgram): the plan to execute (from ``compiler.compile``).
+        """
+        self.program = program
+        self.max_step = program.max_step
+        self.net_layers = program.net_layers
         self._init_registry()
         self._on_compiled()
-        return self.program
+        return program
 
     def _init_registry(self) -> None:
         """Create the controller-owned :class:`~sequence.dqc.registry.QubitRegistry`, seed it with
