@@ -1,17 +1,17 @@
 # File: base.py
-"""Shared controller plumbing for driving the per-node DQC apps.
+"""Shared controller plumbing for driving the per-node worker programs.
 
 A DQC controller is a :class:`~sequence.topology.node.ClassicalNode` wired into the
 network topology: it holds a compiled program (:class:`~program.CompiledProgram`,
-installed via :meth:`~BaseController.load`) and drives it, talking to each node's DQC
-app (:class:`~sequence.dqc.dqc_program.DQCProgram`) purely over classical channels --
+installed via :meth:`~BaseController.load`) and drives it, talking to each node's worker
+program (:class:`~sequence.dqc.worker_program.WorkerProgram`) purely over classical channels --
 broadcasting *step* messages and hearing back *ACK* messages, never calling node
 methods directly. Compilation happens OUTSIDE the controller (the runner owns the
 compiler and runs it); the controller is a pure executor of the resulting plan.
 
 :class:`BaseController` factors out everything that is NOT an orchestration policy:
 the classical-node wiring + shared run state, ``load`` / ``set_nodes``, and the
-two primitives for talking to a DQC app -- :meth:`send_step` (dispatch one step to
+two primitives for talking to a worker program -- :meth:`send_step` (dispatch one step to
 one node) and :meth:`_is_ack` (recognise a step-completion ACK). What it deliberately
 leaves to subclasses is *when* steps are sent and *how* completions advance the run:
 :class:`~barrier.BarrierController` replays the plan as a lock-step barrier,
@@ -24,7 +24,7 @@ import time
 from sequence.topology.node import ClassicalNode
 from sequence.message import Message
 
-from sequence.dqc.dqc_program import DQCMessage, DQCMsgType
+from sequence.dqc.worker_program import DQCMessage, DQCMsgType
 
 
 def _session_identity(op) -> int:
@@ -46,7 +46,7 @@ def _session_identity(op) -> int:
 
 
 class BaseController(ClassicalNode):
-    """Controller base: classical-node wiring, the compiled plan, and DQC-app messaging.
+    """Controller base: classical-node wiring, the compiled plan, and worker-program messaging.
 
     Subclasses add the orchestration policy by implementing :meth:`_start` (kick off
     the run) and :meth:`receive_message` (react to ACKs).
@@ -116,9 +116,9 @@ class BaseController(ClassicalNode):
         self.qnodes = list(qnodes)
         return self
 
-    # ── talk to the per-node DQC apps ────────────────────────────────────────
+    # ── talk to the per-node worker programs ────────────────────────────────────────
     def send_step(self, node_name: str, step: int) -> None:
-        """Dispatch controller ``step`` to one node's DQC app over the classical channel,
+        """Dispatch controller ``step`` to one node's worker program over the classical channel,
         carrying that node's ops for the step (resolved from the compiled program).
 
         Args:
@@ -178,7 +178,7 @@ class BaseController(ClassicalNode):
 
     @staticmethod
     def _is_ack(msg: Message) -> bool:
-        """True if ``msg`` is a step-completion ACK from a DQC app."""
+        """True if ``msg`` is a step-completion ACK from a worker program."""
         return isinstance(msg, DQCMessage) and msg.msg_type is DQCMsgType.ACK
 
     def _apply_deltas(self, msg: Message) -> None:
@@ -204,5 +204,5 @@ class BaseController(ClassicalNode):
         raise NotImplementedError
 
     def receive_message(self, src: str, msg: Message) -> None:
-        """React to an ACK from a DQC app (subclass policy)."""
+        """React to an ACK from a worker program (subclass policy)."""
         raise NotImplementedError

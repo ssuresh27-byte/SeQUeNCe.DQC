@@ -13,12 +13,12 @@ Dependencies come from qubit reuse: a step that touches qubit q depends on the m
 recent earlier step that also touched q (the scheduler's layers are already a valid
 topological order; this just recovers the finer per-qubit DAG).
 
-Constraint: the DQCApp attributes a completing telegate to ``max(self._pending)``
+Constraint: the worker program attributes a completing telegate to ``max(self._pending)``
 (it was written for the barrier, where a node has at most one network step active
 at a time). To keep that correct we never dispatch a network (telegate/teledata)
 step to a node that already has a network step in flight -- but network steps on
 DISJOINT nodes, and any number of local steps, run concurrently. (Lifting this
-fully would need the DQCApp to tag each telegate completion with its step.)
+fully would need the worker program to tag each telegate completion with its step.)
 """
 from __future__ import annotations
 

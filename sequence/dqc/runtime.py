@@ -4,9 +4,10 @@
 ``run(circuit, topology, ...)`` is the single entry point; it constructs a :class:`_Run` (which
 holds the config for the invocation) and drives its shot loop. Per shot, :meth:`_Run._one_shot`
 expands the topology to a DQCNetTopo config (which builds the DQC nodes + the central controller +
-channels), has the controller compile the program and drive its barrier over classical channels,
-then reads out the data qubits. The per-shot pipeline reads top-to-bottom: ``_build_config`` ->
-build net -> ``ctrl.compile`` -> ``_register_noise`` -> ``_attach_agents`` -> run -> ``_measure``.
+channels), builds + runs the compiler, hands the plan to the controller (``ctrl.load``) which
+drives its barrier over classical channels, then reads out the data qubits. The per-shot pipeline
+reads top-to-bottom: ``_build_config`` -> build net -> build compiler + ``compile`` ->
+``ctrl.load`` -> ``_register_noise`` -> ``_attach_agents`` -> run -> ``_measure``.
 
 Purification never fires: ``purification_policy`` sets a LOW reservation target fidelity, so a
 multi-hop pair's swap-degraded bookkept fidelity still clears it and no distillation is ever
@@ -24,11 +25,11 @@ from collections import Counter
 
 import numpy as np
 
-import sequence.dqc.dqc_program as _da
+import sequence.dqc.worker_program as _wp
 from sequence.topology.dqc_net_topo import DQCNetTopo
 from sequence.components.circuit import Circuit
 
-from sequence.dqc.dqc_program import TeleportationDQCProgram
+from sequence.dqc.worker_program import TeleportationWorkerProgram
 from sequence.dqc.compilers import build_compiler
 from sequence.constants import KET_VECTOR_FORMALISM, DENSITY_MATRIX_FORMALISM
 from sequence.dqc.noise import KET_VECTOR_NOISE_FORMALISM, DENSITY_MATRIX_NOISE_FORMALISM
@@ -148,14 +149,14 @@ class _Run:
             qm.noise_rng = np.random.default_rng(noise_seed)
 
     def _attach_agents(self, qn, ctrl, hopmap) -> None:
-        """Install one TeleportationDQCProgram per DQC node (executes the controller's steps).
+        """Install one TeleportationWorkerProgram per DQC node (executes the controller's steps).
 
         Agents are near-stateless executors -- they hold no placement/op state; each step's ops
         arrive already resolved (role, peer, slots) in the controller's STEP_MESSAGE."""
         for nm, nd in qn.items():
-            TeleportationDQCProgram(node=nd, controller_name=ctrl.name,
-                                    hop_distances=hopmap.get(nm, {}),
-                                    reservation_policy=purification_policy)
+            TeleportationWorkerProgram(node=nd, controller_name=ctrl.name,
+                                       hop_distances=hopmap.get(nm, {}),
+                                       reservation_policy=purification_policy)
 
     def _measure(self, qn, ctrl, tl, rng) -> int:
         """Read out the requested data qubits; return the packed measured bitstring.
@@ -189,7 +190,7 @@ class _Run:
             ctrl.load(program)
             self._register_noise(qn, qm, noise_seed)
             metrics = _program_metrics(program, net)
-            _da.RESERVATION_SLACK_CC_MULT = 6 * max(metrics[2], 1)
+            _wp.RESERVATION_SLACK_CC_MULT = 6 * max(metrics[2], 1)
             tl.stop_time = int((program.max_step + 16) * STOP_BUDGET * 8)
             self._attach_agents(qn, ctrl, net.hop_distances())
             tl.init(); ctrl.start_execution()

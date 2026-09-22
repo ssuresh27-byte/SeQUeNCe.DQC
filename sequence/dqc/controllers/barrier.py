@@ -9,7 +9,7 @@ and drives the execution barrier -- broadcast a step to every node, wait for all
 ACKs (delivered over channels), advance (charging ``dt`` to telegate/teledata steps,
 ``local_dt`` to local-only steps), until the program's last step.
 
-Shared plumbing (classical-node wiring, ``load`` / ``set_nodes``, the DQC-app
+Shared plumbing (classical-node wiring, ``load`` / ``set_nodes``, the worker-program
 messaging primitives) lives in :class:`~base.BaseController`; this class adds the
 lock-step barrier policy.
 """

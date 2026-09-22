@@ -201,9 +201,9 @@ class TeleportationApp(RequestApp):
             protocol._step = step
         self.telegate_protocols.append(protocol)
 
-        # Optionally mirror step for DQCApp callback convenience
+        # Optionally mirror step for WorkerProgram callback convenience
         if step is not None:
-            self._current_step = step  # DQCApp also sets this
+            self._current_step = step  # WorkerProgram also sets this
 
     def start_move(self, responder: str, start_t: int, end_t: int, memory_size: int, fidelity: float, data_src: int,
                    dest_slot: Optional[int] = None, identity: int = 0):
@@ -219,7 +219,7 @@ class TeleportationApp(RequestApp):
             dest_slot (Optional[int]): data-memory slot on the responder to land the
                 state in. Defaults to ``data_src`` (mirror the source index) when None,
                 preserving the original behaviour; pass it explicitly to place the
-                moved qubit in a specific slot (needed by DQCApp qubit moves).
+                moved qubit in a specific slot (needed by WorkerProgram qubit moves).
             identity (int): unique reservation id (default 0 -> auto-assigned) so concurrent
                 sessions route back to this app on both endpoints.
         """
@@ -271,7 +271,7 @@ class TeleportationApp(RequestApp):
         """Set the target memory slot for a specific step.
 
         Optional helper for the target owner (responder) to force its local slot
-        to match what DQCApp locked.
+        to match what WorkerProgram locked.
 
         Args:
             step: Step number
@@ -446,7 +446,7 @@ class TeleportationApp(RequestApp):
     def gate_complete(self, role: str, data_key: int):
         """Handle gate completion.
 
-        Called by DQCApp's wrapper and/or telegate_complete. Provides a single
+        Called by WorkerProgram's wrapper and/or telegate_complete. Provides a single
         source of completion emission to avoid double-calling.
 
         Args:
@@ -477,7 +477,7 @@ class TeleportationApp(RequestApp):
         self.data_keys.append(data_key)
         self.results.append((role, data_key, psi))
 
-        # Single emission path: through gate_complete (DQCApp wraps this to unlock)
+        # Single emission path: through gate_complete (WorkerProgram wraps this to unlock)
         self.gate_complete(role, data_key)
 
     # ── move (teledata) half ─────────────────────────────────────────────────
@@ -578,7 +578,7 @@ class TeleportationApp(RequestApp):
                     self._early_expire(msg.reservation, getattr(protocol, "alice_comm_memory", None))
                     self.teledata_protocols.remove(protocol)
                     # Notify the initiator-side app that this teleport fully completed
-                    # (Bob has the state). DQCApp uses this to release the barrier.
+                    # (Bob has the state). WorkerProgram uses this to release the barrier.
                     if self.on_source_complete is not None:
                         self.on_source_complete(protocol)
                     break

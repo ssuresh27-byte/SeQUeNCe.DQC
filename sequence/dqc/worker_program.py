@@ -1,28 +1,28 @@
-"""Per-node QPU execution agents for distributed quantum computing (DQC).
+"""Per-node worker programs for distributed quantum computing (DQC).
 
-A QPU agent runs on one quantum node. It registers on the node, receives compiled
-*step* messages broadcast by the central controller, and executes that step's work
-on the node's QPU:
+A worker program runs on one quantum node's QPU. It registers on the node, receives
+compiled *step* messages broadcast by the central controller, and executes that
+step's work on the node's QPU:
 
 * local (single-node) gates run immediately;
 * remote (two-qubit) gates and qubit relocations ("moves") are executed by the
-  subclass and complete asynchronously, so the agent *defers* the controller ACK
-  for a step until every remote op it launched for that step reports completion.
+  subclass and complete asynchronously, so the worker program *defers* the controller
+  ACK for a step until every remote op it launched for that step reports completion.
 
-:class:`DQCProgram` is the abstract base: it owns the controller/node contract
+:class:`WorkerProgram` is the abstract base: it owns the controller/node contract
 (registration, step dispatch, the deferred-ACK barrier, local-gate execution, and
 slot resolution) and leaves *how* a remote gate / move is physically realized to
-subclasses via :meth:`~DQCProgram._run_remote` / :meth:`~DQCProgram._run_move`.
-:class:`TeleportationDQCProgram` implements those with entanglement teleportation
+subclasses via :meth:`~WorkerProgram._run_remote` / :meth:`~WorkerProgram._run_move`.
+:class:`TeleportationWorkerProgram` implements those with entanglement teleportation
 (:class:`TelegateApp` for remote gates, :class:`TeledataApp` for moves).
 
 Contents
 --------
 DQCMsgType / DQCMessage
     Controller <-> agent step / ACK messages.
-DQCProgram
+WorkerProgram
     Abstract barriered per-node executor (controller/node contract).
-TeleportationDQCProgram
+TeleportationWorkerProgram
     Concrete agent: remote gates via telegate, moves via teledata.
 """
 
@@ -115,7 +115,7 @@ class DQCMessage(Message):
 
 
 # ── QPU agent (abstract base) ───────────────────────────────────────────────
-class DQCProgram(ABC):
+class WorkerProgram(ABC):
     """Barriered (non-pipelined) per-node QPU executor — the controller contract.
 
     Registers on its node (``node.protocols``), receives compiled step messages
@@ -344,7 +344,7 @@ class DQCProgram(ABC):
 
 
 # ── Teleportation agent (concrete) ──────────────────────────────────────────
-class TeleportationDQCProgram(DQCProgram):
+class TeleportationWorkerProgram(WorkerProgram):
     """QPU agent that realizes remote gates and moves with entanglement teleportation.
 
     Remote two-qubit gates (teleported CNOT/CZ) and qubit moves (state teleportation) both run via
@@ -354,7 +354,7 @@ class TeleportationDQCProgram(DQCProgram):
 
     Remote CZ is normalized to CNOT.
 
-    Args (in addition to :class:`DQCProgram`):
+    Args (in addition to :class:`WorkerProgram`):
         hop_distances (Dict[str, int], optional): hop distance to each peer.
         reservation_policy (Callable[[int], tuple], optional): hop count ->
             (memory_size, target_fidelity) for entanglement reservations.
