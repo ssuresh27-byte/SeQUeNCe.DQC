@@ -15,8 +15,12 @@ swappable inner partitioner/scheduler layers.
 
 It seeds slice 0 from a placement partitioner (default topo-aware) -- a good seed
 matters because with the tuned ``move_margin`` the compiler makes few/no moves on
-dense circuits and effectively runs telegates on the seed placement. Data slots
-are addressed as slot == qubit-id so relocations never collide.
+dense circuits and effectively runs telegates on the seed placement. Data slots are
+allocated COMPACTLY per module (indices ``0..capacity-1``) with freed-slot reuse: a
+teledata frees its source slot and the arriving qubit takes a free slot on the
+destination, so each module needs only ``capacity`` physical data slots -- not one
+per qubit. A balance-preserving swap uses two bare teleports, holds their states in comm
+memory, then installs into the two vacated data slots without extra data memory.
 """
 from collections import Counter, defaultdict
 from typing import Dict, List, Tuple
@@ -59,11 +63,7 @@ class FGPCompiler(CompilerBase):
             self.seed_partitioner, self.n_qubits, self.node_names).partition(
             circuit, topology, seed=seed)
 
-        node_ops = self._compile_circuit(circuit)
-        # slot == qubit-id, so a relocated qubit keeps its unique slot on any node
-        data_owners = {nm: {} for nm in self.node_names}
-        for q, nm in self.qubit_to_node.items():
-            data_owners[nm][q] = q
+        node_ops, data_owners = self._compile_circuit(circuit)   # scheduler assigns compact slots
         return build_program(circuit, self.qubit_to_node, data_owners, node_ops)
 
     def _caps(self) -> Dict[str, int]:
@@ -77,15 +77,15 @@ class FGPCompiler(CompilerBase):
         caps = self._caps()
 
         A = dict(self.qubit_to_node)                             # current assignment
+        # Preserve relocation order; the shared scheduler assigns physical slots.
+        # Swaps exchange occupied slots and cost two teleportations.
         self.move_count = 0
         stream: List[tuple] = []
         for t, gate_idxs in enumerate(slices):
             W = self._lookahead_graph(parsed, slices, t)
-            A_new = self._roee(A, W, caps)
-            for q in A:                                          # relocations -> teleports
-                if A_new[q] != A[q]:
-                    stream.append(("move", q, A_new[q], A[q], q))   # dest_slot == q
-                    self.move_count += 1
+            A_new, moves = self._roee(A, W, caps)
+            stream.extend(moves)
+            self.move_count += sum(2 if op[0] == "swap" else 1 for op in moves)
             A = A_new
             for gi in gate_idxs:
                 name, qs, arg = parsed[gi]
@@ -120,9 +120,11 @@ class FGPCompiler(CompilerBase):
                     W[(i, j)] += weight
         return W
 
-    # ── relaxed OEE: greedy positive-gain single-moves + swaps, capacity-bound ──
-    def _roee(self, A: Dict[int, str], W, caps) -> Dict[int, str]:
+    # ── relaxed OEE: greedy positive-gain moves and swaps, capacity-bound ──
+    def _roee(self, A: Dict[int, str], W, caps):
+        """Return the new placement and ordered move/swap stream operations."""
         A = dict(A)
+        moves: List[tuple] = []
         sizes = Counter(A.values())
         nbrs: Dict[int, List[Tuple[int, float]]] = defaultdict(list)
         for (i, j), w in W.items():
@@ -155,25 +157,28 @@ class FGPCompiler(CompilerBase):
                     g = move_gain(q, M)
                     if g > best_gain:
                         best_gain, best = g, ("move", q, M)
-            for a_i in range(len(qubits)):             # balance-preserving swaps
-                a = qubits[a_i]
-                for b in qubits[a_i + 1:]:
+            for i, a in enumerate(qubits):
+                for b in qubits[i + 1:]:
                     if A[a] == A[b]:
                         continue
                     g = swap_gain(a, b)
                     if g > best_gain:
                         best_gain, best = g, ("swap", a, b)
             if best is None:
-                return A
-            if best[0] == "move":
-                _, q, M = best
-                sizes[A[q]] -= 1; sizes[M] += 1; A[q] = M
-            else:
+                return A, moves
+            if best[0] == "swap":
                 _, a, b = best
+                moves.append(("swap", a, A[a], b, A[b]))
                 A[a], A[b] = A[b], A[a]
+                continue
+            _, q, M = best
+            moves.append(("move", q, M, A[q]))  # stream order: qubit, destination, source
+            sizes[A[q]] -= 1
+            sizes[M] += 1
+            A[q] = M
 
     # ── layering (packed by qubit dependency) + bucketize ───────────────────────
     def _schedule_and_bucketize(self, stream):
-        # placement/order are already fixed in ``stream``; this is just the shared
-        # stream -> per-node buckets serialization (see program.stream_to_node_ops).
-        return stream_to_node_ops(stream, self.node_names, self.qubit_to_node)
+        # placement/order are already fixed in ``stream``; the shared scheduler assigns compact
+        # physical slots + step-safe timing (see program.stream_to_node_ops).
+        return stream_to_node_ops(stream, self.node_names, self.qubit_to_node, self._caps())

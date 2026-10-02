@@ -31,18 +31,19 @@ def _session_identity(op) -> int:
     """A unique per-session reservation identity, shared by BOTH endpoints of a network op.
 
     Uses the op-DAG op id (``op_id`` -- build_op_dag tags the SAME id onto both parties' copies of
-    a remote/move op) offset by 1 so it is always >= 1 (identity 0 means "auto-assign" to the RSVP
-    layer). Both endpoints derive the same value from their own op copy, so each can declare the
+    a network op), reserving two positive identities per op for the two swap directions
+    (identity 0 means "auto-assign" to the RSVP layer). Both endpoints derive the same value
+    from their own op copy, so each can declare the
     session's kind by ``identity`` (via ``TeleportationApp.expect_session``) before the reservation
     travels. Falls back to a deterministic hash of the op's defining fields if ``op_id`` is absent."""
     oid = op.get("op_id")
     if oid is not None:
-        return oid + 1
+        return 2 * (oid + 1)
     if "qubit" in op:                        # move: (step, qubit, dest)
         key = (op.get("step"), op.get("qubit"), op.get("dest"))
     else:                                    # remote gate: (step, sorted targets)
         key = (op.get("step"), tuple(sorted(op.get("targets", op.get("qubits", [])))))
-    return (hash(key) & 0x7FFFFFFF) or 1
+    return 2 * ((hash(key) & 0x7FFFFFFF) or 1)
 
 
 class BaseController(ClassicalNode):
@@ -104,9 +105,43 @@ class BaseController(ClassicalNode):
         from sequence.dqc.registry import QubitRegistry
         self.registry = QubitRegistry()
         self.registry.seed_placement(self.program.qubit_to_node, self.program.data_owners)
+        self._move_slots: dict = {}                # step -> {qubit: runtime-assigned dest slot}
         qm = self.timeline.quantum_manager
         if hasattr(qm, "registry"):               # noise-aware managers hold a registry
             qm.registry = self.registry           # inject: noise + agents share the controller's map
+
+    def _dest_slots_for_step(self, step: int) -> dict:
+        """Assign each move in ``step`` a free physical destination slot on its dest node, chosen
+        from LIVE registry occupancy. Computed once per step and cached, so the source and dest
+        workers (and the ACK delta) all agree on where the qubit lands.
+
+        Step-safe: a slot a qubit vacates THIS step is still counted as occupied, so a concurrent
+        arrival -- e.g. the other half of a swap on a full node -- lands in genuinely-free scratch
+        space rather than a slot the hardware has not yet released."""
+        cached = self._move_slots.get(step)
+        if cached is not None:
+            return cached
+        reg = self.registry
+        occ: dict = {}                                # node -> occupied slot indices (step start)
+        for q, nm in reg.qubit_to_node.items():
+            s = reg.qubit_to_slot.get(q)
+            if s is not None:
+                occ.setdefault(nm, set()).add(s)
+        moves: dict = {}                              # qubit -> dest node (dedup src/dest copies)
+        for grp in self.program.node_ops.values():
+            for op in grp.get("move", []):
+                if op.get("step") == step:
+                    moves[op["qubit"]] = op["dest"]
+        assigned: dict = {}
+        for q in sorted(moves):
+            used = occ.setdefault(moves[q], set())
+            s = 0
+            while s in used:
+                s += 1
+            used.add(s)                               # reserve so same-step arrivals differ
+            assigned[q] = s
+        self._move_slots[step] = assigned
+        return assigned
 
     def _on_compiled(self) -> None:
         """Hook run after ``compile`` (subclasses may derive extra plan state)."""
@@ -146,7 +181,7 @@ class BaseController(ClassicalNode):
             return None
         grp = self.program.node_ops.get(node_name, {})
         out = {kind: [dict(op) for op in grp.get(kind, []) if op.get("step") == step]
-               for kind in ("local", "remote", "move")}
+               for kind in ("local", "remote", "move", "swap")}
         # Stamp a unique per-session reservation identity on every network op (independent of the
         # registry): both endpoints derive the same value and bind identity -> app for routing.
         for op in out["remote"] + out["move"]:
@@ -166,6 +201,18 @@ class BaseController(ClassicalNode):
                         op["role"], op["peer"] = "control", tgt_node
                     elif node_name == tgt_node:
                         op["role"], op["peer"] = "target", ctrl_node
+            for op in out["swap"]:
+                a, b = op["qubits"]
+                na, sa = reg.location(a)
+                nb, sb = reg.location(b)
+                first = node_name == na
+                if node_name not in (na, nb) or na == nb:
+                    raise ValueError(f"Invalid runtime swap placement: {op}")
+                identity = _session_identity(op)
+                op.update(peer=nb if first else na, my_slot=sa if first else sb,
+                          in_qubit=b if first else a,
+                          out_identity=identity if first else identity + 1,
+                          in_identity=identity + 1 if first else identity)
             for op in out["move"]:
                 q, dest = op.get("qubit"), op.get("dest")
                 op["src_slot"] = reg.qubit_to_slot.get(q)

@@ -38,7 +38,8 @@ from sequence.kernel.process import Process
 from sequence.kernel.event import Event
 from sequence.utils import log
 from sequence.app.teleportation import TeleportationApp
-from sequence.constants import TELEGATE, TELEDATA
+from sequence.constants import TELEGATE, TELEDATA, TELEPORT
+from sequence.app.teleportation.teledata_protocol import TeledataProtocol
 
 
 # ── Reservation / timing tuning ─────────────────────────────────────────────
@@ -189,7 +190,8 @@ class WorkerProgram(ABC):
         """
         step = msg.step
         ops = getattr(msg, "ops", None) or {}        # the controller sends this node's resolved ops
-        handlers = (("local", self._run_local), ("remote", self._run_remote), ("move", self._run_move))
+        handlers = (("local", self._run_local), ("remote", self._run_remote),
+                    ("move", self._run_move), ("swap", self._run_swap))
         if not any(ops.get(kind) for kind, _ in handlers):
             self._ack_local(step, "no-op")
             return True
@@ -226,6 +228,9 @@ class WorkerProgram(ABC):
         Must call :meth:`_defer` and return ``True`` if this node is a party, else
         return ``False``.
         """
+
+    def _run_swap(self, op: dict, step: int) -> bool:
+        raise NotImplementedError("This worker does not implement qubit swaps")
 
     # ── local gate execution ────────────────────────────────────────────────
     def _do_local(self, op: Dict[str, Any]) -> None:
@@ -397,14 +402,23 @@ class TeleportationWorkerProgram(WorkerProgram):
         self._expected_moves: Dict[int, tuple] = {}
         self._move_by_srcslot: Dict[int, tuple] = {}
 
+        # Swap primitive bookkeeping: in_identity -> {step, my_slot, in_qubit} for the incoming half
+        # of a swap landing on this node (the peer's qubit arrives in comm, then installs into my_slot).
+        self._pending_swaps: Dict[int, dict] = {}
+        self._swap_outgoing: Dict[int, int] = {}
+
         # Completion callbacks -- each releases the step's deferred ACK (via
         # _ack_deferred_unit) when its remote op finishes locally:
         #   telegate        -> the control/target gate completed
         #   teledata dest   -> the moved state has landed here
         #   teledata source -> the qubit has left this node
+        #   teleport (swap) -> the peer's qubit has landed in our comm; install it into data
         self.app.telegate_complete = self._on_telegate_complete
         self.app.on_complete = self._on_teledata_complete
         self.app.on_source_complete = self._on_teledata_source_complete
+        self.app.on_teleport_complete = self._on_teleport_complete
+        self.app.on_teleport_source_ready = self._on_teleport_source_ready
+        self.app.on_teleport_source_complete = self._on_teleport_source_complete
 
     # ── remote (telegate) gates ─────────────────────────────────────────────
     def _run_remote(self, op: dict, step: int) -> bool:
@@ -512,6 +526,69 @@ class TeleportationWorkerProgram(WorkerProgram):
                         f"hops={hops} mem_size={mem_size} fid={fidelity}; t=[{t0},{t1}]")
         self.app.start_move(responder=dest, start_t=t0, end_t=t1, memory_size=mem_size,
                             fidelity=fidelity, data_src=src_slot, dest_slot=dest_slot, identity=identity)
+
+    def _run_swap(self, op: dict, step: int) -> bool:
+        incoming, outgoing = op["in_identity"], op["out_identity"]
+        self._pending_swaps[incoming] = dict(step=step, slot=op["my_slot"],
+            qubit=op["in_qubit"], outgoing=outgoing, source_ready=False,
+            source_done=False, installed=False, comm_key=None)
+        self._swap_outgoing[outgoing] = incoming
+        self.app.expect_session(incoming, TELEPORT)
+        self.app.expect_session(outgoing, TELEPORT)
+        self._defer(step)
+        t0, t1, size, fidelity, _ = self._reservation_for(op["peer"])
+        self.app.start_teleport(responder=op["peer"], start_t=t0, end_t=t1,
+            memory_size=size, fidelity=fidelity, data_memory_index=op["my_slot"],
+            identity=outgoing)
+        return True
+
+    def _on_teleport_complete(self, comm_key: int, identity: int):
+        state = self._pending_swaps.get(identity)
+        if state is None:
+            return False
+        state["comm_key"] = comm_key
+        self._install_swap(identity)
+        # The app retains the incoming comm memory until the install releases it.
+        return True
+
+    def _on_teleport_source_ready(self, protocol):
+        incoming = self._swap_outgoing.get(protocol.identity)
+        if incoming is not None:
+            self._pending_swaps[incoming]["source_ready"] = True
+            self._install_swap(incoming)
+
+    def _on_teleport_source_complete(self, protocol):
+        incoming = self._swap_outgoing.get(protocol.identity)
+        if incoming is not None:
+            self._pending_swaps[incoming]["source_done"] = True
+            self._finish_swap(incoming)
+
+    def _install_swap(self, identity):
+        state = self._pending_swaps[identity]
+        if state["installed"] or not state["source_ready"] or state["comm_key"] is None:
+            return
+        comm_key = state["comm_key"]
+        data_key = self.node.components[self.data_array].memories[state["slot"]].qstate_key
+        qm = self.tl.quantum_manager
+        qm.run_circuit(TeledataProtocol._swap_circuit, [comm_key, data_key],
+                       self.node.get_generator().random())
+        # Factor out the measured source state now left in comm before resetting it.
+        measure = Circuit(1)
+        measure.measure(0)
+        qm.run_circuit(measure, [comm_key], self.node.get_generator().random())
+        state["installed"] = True
+        self._pending_deltas.setdefault(state["step"], []).append(
+            {"qubit": state["qubit"], "node": self.node.name,
+             "slot": state["slot"], "key": data_key})
+        self.app.release_teleport(identity)
+        self._finish_swap(identity)
+
+    def _finish_swap(self, identity):
+        state = self._pending_swaps[identity]
+        if state["installed"] and state["source_done"]:
+            del self._pending_swaps[identity]
+            del self._swap_outgoing[state["outgoing"]]
+            self._ack_deferred_unit(state["step"])
 
     # ── completion callbacks (release deferred ACKs) ────────────────────────
     def _on_telegate_complete(self, data_key: int, role: str = "unknown"):

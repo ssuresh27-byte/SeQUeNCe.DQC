@@ -51,8 +51,9 @@ class QAPPartitioner(PartitionerBase):
 
         best = None
         for k in range(max(1, starts)):
-            np.random.seed(seed + k)
-            opts = {} if k == 0 else {"P0": "randomized"}
+            # Seed the FAQ solver's OWN rng (scipy>=1.9 ignores the legacy np.random global state),
+            # so multi-start placement is reproducible: same (seed, circuit, topology) -> same plan.
+            opts = {"rng": seed + k} if k == 0 else {"P0": "randomized", "rng": seed + k}
             res = quadratic_assignment(F, D, method="faq", options=opts)
             if best is None or res.fun < best.fun:
                 best = res

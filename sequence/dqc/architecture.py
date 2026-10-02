@@ -184,7 +184,7 @@ class DQCArchitecture:
         """
         comm = self.comm_memo if comm_memo is None else comm_memo
         return [{"name": nm, "type": "DQCNode", "seed": i + 1,
-                 "memo_size": max(comm, self.capacities[nm] + 4),
+                 "memo_size": max(comm, 2),        # communication (EPR) qubits = tunable comm_memo
                  "data_memo_size": max(1, self.capacities[nm]),
                  "capacity": self.capacities[nm],
                  "group": 0, "template": "teleportation",
@@ -291,3 +291,24 @@ def make_caveman(caves: int, size: int, cap: int, comm_memo: int = 16, node_nois
         edges.append((names[c * size + size - 1], names[(c + 1) * size]))
     return DQCArchitecture(f"caveman{caves}x{size}_cap{cap}", {nm: cap for nm in names}, edges,
                        comm_memo, node_noise)
+
+
+def max_node_degree(edges) -> int:
+    """Largest node degree in an edge list (0 for an empty/edgeless graph)."""
+    from collections import Counter
+    deg = Counter()
+    for a, b in edges:
+        deg[a] += 1
+        deg[b] += 1
+    return max(deg.values(), default=0)
+
+
+def comm_for_degree(max_deg: int, base: int = 8) -> int:
+    """Communication (EPR) slots per node that avoid telegate starvation at a hub.
+
+    Concurrent telegates routed through a degree-``d`` node consume up to ``2*floor(d/2) ~= d`` of
+    its comm memories at once (each two-hop telegate holds two EPR halves on the intermediate hub);
+    starving that pool stalls the schedule and the run never reaches the marked state. We provision
+    ``2*d`` -- generous headroom, and idle comm qubits are free in simulation (they enter the state
+    only once entangled) -- with a floor of ``base`` so small topologies keep the paper's comm size."""
+    return max(base, 2 * max_deg)

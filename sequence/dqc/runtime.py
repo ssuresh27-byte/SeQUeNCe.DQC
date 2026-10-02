@@ -59,7 +59,7 @@ def purification_policy(_hops):
 
 
 def _program_metrics(program, topology):
-    """(n_telegates, n_moves, max_hop) from a compiled program."""
+    """Network costs from a compiled program; each swap counts as two teledata moves."""
     q2n = program.qubit_to_node
     hist = Counter(); seen = set()
     for grp in program.node_ops.values():
@@ -78,8 +78,15 @@ def _program_metrics(program, topology):
                 continue
             seen_mv.add(key)
             mv_hops.append(topology.hop(op["src"], op["dest"]))
+    seen_swaps = set()
+    for grp in program.node_ops.values():
+        for op in grp.get("swap", []):
+            key = (op["layer"], tuple(op["qubits"]))
+            if key not in seen_swaps:
+                seen_swaps.add(key)
+                mv_hops.extend([topology.hop(*op["nodes"])] * 2)
     n_tele = sum(hist.values())
-    n_moves = len(seen_mv)
+    n_moves = len(seen_mv) + 2 * len(seen_swaps)
     max_hop = max([max((h for h in hist if h > 0), default=0)] + mv_hops)
     return n_tele, n_moves, max_hop, dict(sorted(hist.items()))
 
@@ -130,10 +137,11 @@ class _Run:
         self.topology.compiler_spec = {"partitioner": self.partitioner, "scheduler": self.scheduler}
         config = self.topology.sim_config()
         config["formalism"] = _FORMALISMS[(self.formalism, self.noise_active)]
-        for nd in config["nodes"]:                   # generous memory: data holds every qubit slot
-            if nd.get("type") == "DQCNode":
-                nd["data_memo_size"] = max(nd.get("data_memo_size", 0), self.n)
-                nd["memo_size"] = max(nd.get("memo_size", 0), 8 * self.n + 8)
+        for nd in config["nodes"]:                   # data memory = the node's TRUE capacity; comm
+            if nd.get("type") == "DQCNode":          # (EPR) memory = the topology's tunable comm_memo
+                cap = nd.get("data_memo_size")
+                nd["data_memo_size"] = cap if cap else self.n
+                nd["memo_size"] = max(nd.get("memo_size", 0), 2)
         if self.dump_config and not self._dumped:    # write the exact simulated config once
             with open(self.dump_config, "w") as f:
                 json.dump(config, f, indent=2)
@@ -178,6 +186,16 @@ class _Run:
     def _one_shot(self, shot_rng, noise_seed):
         """Build the network, compile + drive the barrier, and read out one shot."""
         config = self._build_config()
+        if self.noise_active:
+            # The network is rebuilt every shot from the same config, which would re-seed the
+            # node/BSM generators identically and REPLAY the same entanglement-generation
+            # (Bell-pair depolarizing) noise every shot -- so the dominant noise channel would not
+            # be trajectory-averaged (only per-gate/measurement noise, which is re-seeded via
+            # noise_seed, would vary). Offset every node seed by the per-shot noise_seed so each
+            # shot draws an INDEPENDENT Bell/heralding/swap realization.
+            for nd in config["nodes"]:
+                if "seed" in nd:
+                    nd["seed"] = nd["seed"] + noise_seed
         with contextlib.redirect_stdout(io.StringIO()):
             net = DQCNetTopo(config); tl = net.tl; qm = tl.quantum_manager
             qn = {node.name: node for node in net.nodes[DQCNetTopo.DQC_NODE]}

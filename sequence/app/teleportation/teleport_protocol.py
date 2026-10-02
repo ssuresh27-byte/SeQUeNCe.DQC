@@ -127,6 +127,9 @@ class TeleportProtocol(TeleportationProtocol):
         # send classical corrections to Bob
         msg = TeleportMessage(TeleportMsgType.MEASUREMENT_RESULT, bob_comm_memory_name=self.bob_comm_memory_name, x_flip=x, z_flip=z, reservation=reservation)
         self.owner.send_message(self.remote_node_name, msg)
+        callback = self.owner.app.on_teleport_source_ready
+        if callback is not None:
+            callback(self)
 
     def received_message(self, src: str, msg: TeleportMessage):
         """ Handle incoming messages, specifically teleportation corrections.
@@ -159,7 +162,7 @@ class TeleportProtocol(TeleportationProtocol):
             self.owner.timeline.quantum_manager.run_circuit(TeleportProtocol._z_flip_circuit, [bob_comm_memory_key], rnd)
             log.logger.info(f"{self.name}: Z-flip applied on memory {msg.bob_comm_memory_name}")
 
-        self.owner.app.teleport_complete(bob_comm_memory_key)
+        self.hold_comm = bool(self.owner.app.teleport_complete(bob_comm_memory_key, getattr(self, "identity", None)))
 
     def bob_acknowledge_complete(self, reservation: Reservation):
         """Acknowledge the completion of the teleportation process.

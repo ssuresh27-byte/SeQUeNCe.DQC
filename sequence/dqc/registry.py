@@ -36,12 +36,18 @@ class QubitRegistry:
     # ── logical qubit -> physical placement (owned/evolved by the controller) ─
     def seed_placement(self, qubit_to_node: dict, data_owners: dict) -> None:
         """Seed the initial logical->physical map from the compiled program: ``qubit_to_node``
-        (logical qubit -> node name) and ``data_owners`` (node name -> {qubit: slot})."""
+        (logical qubit -> node name) and ``data_owners`` (node name -> {qubit: slot}).
+
+        Physical slots are assigned COMPACTLY here (lowest indices per node), NOT taken from
+        ``data_owners``'s values -- those are logical hints only. This is what lets a node use just
+        ``capacity + scratch`` physical data memory: each node's resident qubits occupy slots
+        ``0..k-1`` regardless of their global ids. Moves then land in a free slot chosen at runtime
+        (see the controller's per-step allocation)."""
         self.qubit_to_node = dict(qubit_to_node)
         self.qubit_to_slot = {}
         for node_name, slots in data_owners.items():
-            for q, slot in slots.items():
-                self.qubit_to_slot[q] = slot
+            for i, q in enumerate(sorted(slots)):     # compact: 0,1,2,... in qubit-id order
+                self.qubit_to_slot[q] = i
 
     def place(self, qubit: int, node_name: str, slot: int) -> None:
         """Record that logical ``qubit`` now lives on ``node_name`` at ``slot`` (a move delta)."""

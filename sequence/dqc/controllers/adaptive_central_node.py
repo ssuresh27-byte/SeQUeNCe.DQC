@@ -52,7 +52,7 @@ class AdaptiveController(BaseController):
             s = op.layer
             self.participants[s].update(op.nodes or [])
             step_qubits[s].update(op.qubits)
-            if op.kind in ("remote", "move"):
+            if op.kind in ("remote", "move", "swap"):
                 self.is_net[s] = True
 
         self.all_steps = set(self.participants)
@@ -64,6 +64,10 @@ class AdaptiveController(BaseController):
                     self.preds[s].add(last[q])
             for q in step_qubits.get(s, ()):
                 last[q] = s
+        for oid, predecessors in self.program.dag.preds.items():
+            layer = self.program.dag.ops[oid].layer
+            for predecessor in predecessors:
+                self.preds[layer].add(self.program.dag.ops[predecessor].layer)
         self.succ = defaultdict(set)
         for s, ps in self.preds.items():
             for p in ps:
