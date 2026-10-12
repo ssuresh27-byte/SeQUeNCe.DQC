@@ -85,7 +85,7 @@ class DQCArchitecture:
         """Node names in insertion order (derived from ``capacities``)."""
         return list(self.capacities)
 
-    # ── incremental construction (node-centric builder) ─────────────────
+    # -- incremental construction (node-centric builder) -----------------
     def add_node(self, name: str, data_qubits: int = 1, *,
                  one_qubit_gate_fid: float = 1.0, two_qubit_gate_fid: float = 1.0,
                  measurement_fid: float = 1.0, t1: float = None, t2: float = None) -> "DQCArchitecture":
@@ -140,7 +140,7 @@ class DQCArchitecture:
         self.edges.append((a, b))
         return self
 
-    # ── construction from a NetworkX graph (reuse sequence.utils.graphs) ──
+    # -- construction from a NetworkX graph (reuse sequence.utils.graphs) --
     @classmethod
     def from_nx_graph(cls, name: str, G: nx.Graph, cap: int, comm_memo: int = 16,
                       node_noise: Dict[str, dict] = None, order=None) -> "DQCArchitecture":
@@ -155,7 +155,7 @@ class DQCArchitecture:
         edges = [(idx[u], idx[v]) for u, v in G.edges()]
         return cls(name, caps, edges, comm_memo, node_noise)
 
-    # ── persistence ─────────────────────────────────────────────────────
+    # -- persistence -----------------------------------------------------
     def to_dict(self) -> dict:
         d = {"name": self.name, "capacities": self.capacities,
              "edges": [list(e) for e in self.edges], "comm_memo": self.comm_memo}
@@ -174,7 +174,7 @@ class DQCArchitecture:
         return cls(d["name"], d["capacities"], d["edges"], d.get("comm_memo", 16),
                    d.get("node_noise"))
 
-    # ── expansion to the DQCNetTopo config (the DQC parallel of utils.nx_converter) ──
+    # -- expansion to the DQCNetTopo config (the DQC parallel of utils.nx_converter) --
     def generate_nodes(self, comm_memo: int = None) -> List[dict]:
         """DQCNode config entries (parallels :func:`sequence.utils.nx_converter.generate_nodes`).
 
@@ -252,7 +252,7 @@ Topology = DQCArchitecture
 DQCTopology = DQCArchitecture
 
 
-# ── generators: build on SeQUeNCe's pre-packaged NetworkX graph builders ──
+# -- generators: build on SeQUeNCe's pre-packaged NetworkX graph builders --
 def make_star(n_nodes: int, cap: int, comm_memo: int = 16, node_noise=None) -> DQCArchitecture:
     """Hub-and-spoke: node 0 is the hub, adjacent to every spoke.
 
@@ -264,7 +264,7 @@ def make_star(n_nodes: int, cap: int, comm_memo: int = 16, node_noise=None) -> D
 
 
 def make_grid(rows: int, cols: int, cap: int, comm_memo: int = 16, node_noise=None) -> DQCArchitecture:
-    """R×C mesh: node at (r,c) adjacent to Manhattan-distance-1 neighbours.
+    """RxC mesh: node at (r,c) adjacent to Manhattan-distance-1 neighbours.
 
     Wraps :func:`sequence.utils.graphs.build_grid`; vertices ``(r, c)`` are named
     row-major (``r*cols + c``)."""

@@ -41,7 +41,7 @@ KET_VECTOR_NOISE_FORMALISM = "ket_vector_noise"
 DENSITY_MATRIX_NOISE_FORMALISM = "density_matrix_noise"
 
 
-# ── shared fidelity -> probability + T1/T2 math ───────────────────────────────
+# -- shared fidelity -> probability + T1/T2 math -------------------------------
 def gate_error_prob(infidelity: float, num_qubits: int) -> float:
     """Average gate infidelity -> error-channel probability p = (d+1)/d * infid, capped at
     1, with d = 2**num_qubits (1.5*infid for 1-qubit, 1.25*infid for 2-qubit gates)."""

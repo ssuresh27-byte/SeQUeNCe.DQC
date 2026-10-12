@@ -39,7 +39,7 @@ class SchedulerBase:
         """Return {node: {role: [op_dict]}} with a layer/step on each op."""
         raise NotImplementedError
 
-    # ── shared op-bucketing (schedulers only produce the layers map) ─────────
+    # -- shared op-bucketing (schedulers only produce the layers map) ---------
     def _bucketize(self, raw, layers: Dict[int, int]) -> Dict[str, Dict[str, list]]:
         """Bucket each gate into its owning node(s) as local/remote ops, labelled by
         the controller step (``layer``) it runs in. The scheduler's only job is to

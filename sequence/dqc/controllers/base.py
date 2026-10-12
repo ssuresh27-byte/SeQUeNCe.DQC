@@ -78,7 +78,7 @@ class BaseController(ClassicalNode):
         self.current = 0                          # highest completed step + 1
         self._completed = False
 
-    # ── load: install a pre-compiled program (produced by the runner) ─────────
+    # -- load: install a pre-compiled program (produced by the runner) ---------
     def load(self, program):
         """Install a compiled ``program`` to execute and prepare the controller's run state.
 
@@ -151,7 +151,7 @@ class BaseController(ClassicalNode):
         self.qnodes = list(qnodes)
         return self
 
-    # ── talk to the per-node worker programs ────────────────────────────────────────
+    # -- talk to the per-node worker programs ----------------------------------------
     def send_step(self, node_name: str, step: int) -> None:
         """Dispatch controller ``step`` to one node's worker program over the classical channel,
         carrying that node's ops for the step (resolved from the compiled program).
@@ -238,7 +238,7 @@ class BaseController(ClassicalNode):
             self.registry.place(d["qubit"], d["node"], d["slot"])
             self.registry.set_key(d["qubit"], d["key"])
 
-    # ── run lifecycle ─────────────────────────────────────────────────────────
+    # -- run lifecycle ---------------------------------------------------------
     def start_execution(self) -> None:
         """Kick off the run (call after ``timeline.init()``). Stamps the wall-clock
         start used by the progress readout, then hands off to the policy's

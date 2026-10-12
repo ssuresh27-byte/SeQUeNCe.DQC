@@ -40,7 +40,7 @@ class AdaptiveController(BaseController):
     :class:`~base.BaseController` for the constructor arguments and shared state.
     """
 
-    # ── build the per-step dependency DAG (run after compile) ─────────────────
+    # -- build the per-step dependency DAG (run after compile) -----------------
     def _on_compiled(self):
         # Source the per-step structure from the program's first-class op-DAG (each op carries
         # its ASAP layer, qubits, kind, and owning nodes) rather than re-deriving it from the
@@ -79,7 +79,7 @@ class AdaptiveController(BaseController):
         self.inflight = {}                     # step -> set(nodes) not yet ACKed
         self.net_busy = set()                  # nodes currently running a network step
 
-    # ── run ──────────────────────────────────────────────────────────────────
+    # -- run ------------------------------------------------------------------
     def _start(self):
         self._dispatch_ready()
 

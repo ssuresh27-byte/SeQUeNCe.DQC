@@ -39,7 +39,7 @@ class BarrierController(BaseController):
         super().__init__(name, timeline, dt=dt, local_dt=local_dt)
         self.waiting = set()                      # names of nodes not yet ACKed this step
 
-    # ── barrier: receive ACKs over the channel, advance when all in ──────────
+    # -- barrier: receive ACKs over the channel, advance when all in ----------
     def receive_message(self, src: str, msg: Message) -> None:
         if not self._is_ack(msg):
             return

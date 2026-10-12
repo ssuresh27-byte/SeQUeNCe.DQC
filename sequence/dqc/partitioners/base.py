@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Base class for placement PARTITIONERS — decide WHERE each qubit lives.
+"""Base class for placement PARTITIONERS -- decide WHERE each qubit lives.
 
 A partitioner maps logical qubits onto physical nodes, respecting per-node memory
 capacity. Concrete strategies (topo-aware, random, qap) live in their
@@ -23,7 +23,7 @@ class PartitionerBase:
         self.node_names = node_names or ["alice", "bob", "charlie"]
         self.qubit_to_node: Dict[int, str] = {}
 
-    # ── to override ──────────────────────────────────────────────────────────
+    # -- to override ----------------------------------------------------------
     def configure_topology(self, edges, capacities: Dict[str, int]):
         """Accept the physical (node, node) links + node_name -> capacity map."""
         raise NotImplementedError
@@ -33,7 +33,7 @@ class PartitionerBase:
         """Return a {qubit_id: node_name} placement respecting capacity."""
         raise NotImplementedError
 
-    # ── one-shot entry point ─────────────────────────────────────────────────
+    # -- one-shot entry point -------------------------------------------------
     def partition(self, circuit, topology, seed: int = 0) -> Dict[int, str]:
         """Place ``circuit``'s qubits onto ``topology`` and return the placement."""
         self.configure_topology(topology.edges, topology.capacities)

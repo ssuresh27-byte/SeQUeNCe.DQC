@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Topology-aware placement compiler (Andrés-Martínez et al. 2023)."""
+"""Topology-aware placement compiler (Andres-Martinez et al. 2023)."""
 from typing import Dict, Tuple
 
 from sequence.dqc.partitioners.base import PartitionerBase
 
 
 class TopologyAwarePartitioner(PartitionerBase):
-    """Heterogeneous / topology-aware allocator (Andrés-Martínez, Junghans, Heunen
+    """Heterogeneous / topology-aware allocator (Andres-Martinez, Junghans, Heunen
     et al., "Distributing circuits over heterogeneous, modular quantum computing
     network architectures", 2023 -- the pytket-dqc heterogeneous distributor).
 

@@ -130,7 +130,7 @@ class Run:
             for p in getattr(topology, "node_noise", {}).values())
         self._dumped = False
 
-    # ── per-shot pipeline steps ──────────────────────────────────────────────
+    # -- per-shot pipeline steps ----------------------------------------------
     def _build_config(self) -> dict:
         """The DQCNetTopo config for one shot: the topology's sim_config with the chosen controller
         policy + compiler, the state formalism, and memory sized to the circuit."""

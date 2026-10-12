@@ -52,7 +52,7 @@ class FGPCompiler(CompilerBase):
         if move_margin is not None:
             self.move_margin = move_margin
 
-    # ── compile: seed placement + time-sliced partition/schedule ─────────────
+    # -- compile: seed placement + time-sliced partition/schedule -------------
     def compile(self, circuit, topology, seed: int = 0):
         self.n_qubits = circuit.size
         self.node_names = topology.node_names
@@ -69,7 +69,7 @@ class FGPCompiler(CompilerBase):
     def _caps(self) -> Dict[str, int]:
         return dict(self._capacities)
 
-    # ── plan ─────────────────────────────────────────────────────────────────
+    # -- plan -----------------------------------------------------------------
     def _compile_circuit(self, circuit):
         raw = getattr(circuit, "ops", getattr(circuit, "gates", []))
         parsed = [gate_fields(op) for op in raw]                 # (name, qubits, arg)
@@ -92,7 +92,7 @@ class FGPCompiler(CompilerBase):
                 stream.append(("gate", name, list(qs), arg))
         return self._schedule_and_bucketize(stream)
 
-    # ── time slices: packed dependency layers ──────────────────────────────────
+    # -- time slices: packed dependency layers ----------------------------------
     @staticmethod
     def _time_slices(parsed) -> List[List[int]]:
         free: Dict[int, int] = {}
@@ -104,7 +104,7 @@ class FGPCompiler(CompilerBase):
                 free[q] = L + 1
         return [slices[t] for t in sorted(slices)]
 
-    # ── lookahead-weighted interaction graph for slice t ────────────────────────
+    # -- lookahead-weighted interaction graph for slice t ------------------------
     def _lookahead_graph(self, parsed, slices, t) -> Dict[Tuple[int, int], float]:
         W: Dict[Tuple[int, int], float] = defaultdict(float)
         last = min(len(slices), t + 1 + self.lookahead)
@@ -120,7 +120,7 @@ class FGPCompiler(CompilerBase):
                     W[(i, j)] += weight
         return W
 
-    # ── relaxed OEE: greedy positive-gain moves and swaps, capacity-bound ──
+    # -- relaxed OEE: greedy positive-gain moves and swaps, capacity-bound --
     def _roee(self, A: Dict[int, str], W, caps):
         """Return the new placement and ordered move/swap stream operations."""
         A = dict(A)
@@ -177,7 +177,7 @@ class FGPCompiler(CompilerBase):
             sizes[M] += 1
             A[q] = M
 
-    # ── layering (packed by qubit dependency) + bucketize ───────────────────────
+    # -- layering (packed by qubit dependency) + bucketize -----------------------
     def _schedule_and_bucketize(self, stream):
         # placement/order are already fixed in ``stream``; the shared scheduler assigns compact
         # physical slots + step-safe timing (see program.stream_to_node_ops).

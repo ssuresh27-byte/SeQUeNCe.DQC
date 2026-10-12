@@ -33,7 +33,7 @@ class QubitRegistry:
         self.node_of: dict = {}          # qstate key -> owning DQCNode
         self.last_touched: dict = {}     # qstate key -> last sim time (for idle T1/T2)
 
-    # ── logical qubit -> physical placement (owned/evolved by the controller) ─
+    # -- logical qubit -> physical placement (owned/evolved by the controller) -
     def seed_placement(self, qubit_to_node: dict, data_owners: dict) -> None:
         """Seed the initial logical->physical map from the compiled program: ``qubit_to_node``
         (logical qubit -> node name) and ``data_owners`` (node name -> {qubit: slot}).
@@ -58,7 +58,7 @@ class QubitRegistry:
         """(node_name, slot) of logical ``qubit``, or (None, None) if unplaced."""
         return self.qubit_to_node.get(qubit), self.qubit_to_slot.get(qubit)
 
-    # ── logical qubit -> qstate key ───────────────────────────────────────────
+    # -- logical qubit -> qstate key -------------------------------------------
     def set_key(self, qubit: int, key: int) -> None:
         """Record the current quantum-manager ``key`` for logical ``qubit``."""
         self.qubit_to_key[qubit] = key
@@ -67,7 +67,7 @@ class QubitRegistry:
         """Current quantum-manager key for logical ``qubit`` (None if unmapped)."""
         return self.qubit_to_key.get(qubit)
 
-    # ── key -> node routing (read by the noise math) ──────────────────────────
+    # -- key -> node routing (read by the noise math) --------------------------
     def register_qubit(self, key: int, node) -> None:
         """Route qstate ``key`` to its owning DQCNode (fidelities read live from the node)."""
         self.node_of[key] = node
