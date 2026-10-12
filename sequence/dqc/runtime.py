@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Runtime harness: build the network, run, measure.
 
-``run(circuit, topology, ...)`` is the single entry point; it constructs a :class:`_Run` (which
-holds the config for the invocation) and drives its shot loop. Per shot, :meth:`_Run._one_shot`
+``run(circuit, topology, ...)`` is the single entry point; it constructs a :class:`Run` (which
+holds the config for the invocation) and drives its shot loop. Per shot, :meth:`Run._one_shot`
 expands the topology to a DQCNetTopo config (which builds the DQC nodes + the central controller +
 channels), builds + runs the compiler, hands the plan to the controller (``ctrl.load``) which
 drives its barrier over classical channels, then reads out the data qubits. The per-shot pipeline
@@ -25,7 +25,7 @@ from collections import Counter
 
 import numpy as np
 
-import sequence.dqc.worker_program as _wp
+import sequence.dqc.worker_program as wp
 from sequence.topology.dqc_net_topo import DQCNetTopo
 from sequence.components.circuit import Circuit
 
@@ -91,7 +91,7 @@ def _program_metrics(program, topology):
     return n_tele, n_moves, max_hop, dict(sorted(hist.items()))
 
 
-class _Run:
+class Run:
     """One ``run(...)`` invocation: holds the config and drives the shot loop.
 
     Constructing it validates + stores the arguments and computes derived config (the data qubits
@@ -208,7 +208,7 @@ class _Run:
             ctrl.load(program)
             self._register_noise(qn, qm, noise_seed)
             metrics = _program_metrics(program, net)
-            _wp.RESERVATION_SLACK_CC_MULT = 6 * max(metrics[2], 1)
+            wp.RESERVATION_SLACK_CC_MULT = 6 * max(metrics[2], 1)
             tl.stop_time = int((program.max_step + 16) * STOP_BUDGET * 8)
             self._attach_agents(qn, ctrl, net.hop_distances())
             tl.init(); ctrl.start_execution()
@@ -275,7 +275,7 @@ def run(circuit, topology, partitioner="topo-aware", scheduler="fgp", seed=0,
     gets simulated (teleport-json layout, per-node noise inline on each DQCNode), so it
     can be inspected. Written once, before the first shot.
     """
-    return _Run(circuit, topology, partitioner=partitioner, scheduler=scheduler, seed=seed,
+    return Run(circuit, topology, partitioner=partitioner, scheduler=scheduler, seed=seed,
                 controller=controller, data_qubits=data_qubits, expected=expected, shots=shots,
                 meas_seed=meas_seed, compiler=compiler, dump_config=dump_config,
                 formalism=formalism).execute()
