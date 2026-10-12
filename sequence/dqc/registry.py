@@ -22,7 +22,8 @@ from __future__ import annotations
 
 
 class QubitRegistry:
-    """The controller-owned logical<->physical<->key map (see module docstring)."""
+    """The controller-owned logical<->physical<->key map (see module docstring).
+    """
 
     def __init__(self) -> None:
         # placement (the logical<->physical map the controller owns and evolves)
@@ -33,7 +34,6 @@ class QubitRegistry:
         self.node_of: dict = {}          # qstate key -> owning DQCNode
         self.last_touched: dict = {}     # qstate key -> last sim time (for idle T1/T2)
 
-    # -- logical qubit -> physical placement (owned/evolved by the controller) -
     def seed_placement(self, qubit_to_node: dict, data_owners: dict) -> None:
         """Seed the initial logical->physical map from the compiled program: ``qubit_to_node``
         (logical qubit -> node name) and ``data_owners`` (node name -> {qubit: slot}).
@@ -42,7 +42,8 @@ class QubitRegistry:
         ``data_owners``'s values -- those are logical hints only. This is what lets a node use just
         ``capacity + scratch`` physical data memory: each node's resident qubits occupy slots
         ``0..k-1`` regardless of their global ids. Moves then land in a free slot chosen at runtime
-        (see the controller's per-step allocation)."""
+        (see the controller's per-step allocation).
+        """
         self.qubit_to_node = dict(qubit_to_node)
         self.qubit_to_slot = {}
         for node_name, slots in data_owners.items():
@@ -58,18 +59,20 @@ class QubitRegistry:
         """(node_name, slot) of logical ``qubit``, or (None, None) if unplaced."""
         return self.qubit_to_node.get(qubit), self.qubit_to_slot.get(qubit)
 
-    # -- logical qubit -> qstate key -------------------------------------------
     def set_key(self, qubit: int, key: int) -> None:
-        """Record the current quantum-manager ``key`` for logical ``qubit``."""
+        """Record the current quantum-manager ``key`` for logical ``qubit``.
+        logical qubit -> qstate key
+        """
         self.qubit_to_key[qubit] = key
 
     def key_of(self, qubit: int):
         """Current quantum-manager key for logical ``qubit`` (None if unmapped)."""
         return self.qubit_to_key.get(qubit)
 
-    # -- key -> node routing (read by the noise math) --------------------------
     def register_qubit(self, key: int, node) -> None:
-        """Route qstate ``key`` to its owning DQCNode (fidelities read live from the node)."""
+        """Route qstate ``key`` to its owning DQCNode (fidelities read live from the node).
+        key -> node routing (read by the noise math)
+        """
         self.node_of[key] = node
 
     def fids(self, key: int) -> tuple:

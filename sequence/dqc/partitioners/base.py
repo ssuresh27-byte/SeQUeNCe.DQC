@@ -13,7 +13,8 @@ from sequence.dqc.circuit_ops import get_interaction_weights
 
 
 class PartitionerBase:
-    """Common surface for placement partitioners."""
+    """Common surface for placement partitioners.
+    """
 
     def __init__(self, n_qubits: int, n_nodes: int, memory_capacity: int,
                  node_names: List[str] = None):
@@ -23,9 +24,9 @@ class PartitionerBase:
         self.node_names = node_names or ["alice", "bob", "charlie"]
         self.qubit_to_node: Dict[int, str] = {}
 
-    # -- to override ----------------------------------------------------------
     def configure_topology(self, edges, capacities: Dict[str, int]):
-        """Accept the physical (node, node) links + node_name -> capacity map."""
+        """Accept the physical (node, node) links + node_name -> capacity map.
+        """
         raise NotImplementedError
 
     def partition_qubits(self, interaction_weights: Dict[Tuple[int, int], int] = None,
@@ -33,9 +34,9 @@ class PartitionerBase:
         """Return a {qubit_id: node_name} placement respecting capacity."""
         raise NotImplementedError
 
-    # -- one-shot entry point -------------------------------------------------
     def partition(self, circuit, topology, seed: int = 0) -> Dict[int, str]:
-        """Place ``circuit``'s qubits onto ``topology`` and return the placement."""
+        """Place ``circuit``'s qubits onto ``topology`` and return the placement.
+        """
         self.configure_topology(topology.edges, topology.capacities)
         iw = get_interaction_weights(circuit)
         return self.partition_qubits(iw, seed=seed)

@@ -34,13 +34,14 @@ class BarrierController(BaseController):
     constructor arguments and shared state.
     """
 
-    def __init__(self, name: str, timeline,
-                 dt: float = 0.0, local_dt: float = None):
+    def __init__(self, name: str, timeline, dt: float = 0.0, local_dt: float = None):
         super().__init__(name, timeline, dt=dt, local_dt=local_dt)
         self.waiting = set()                      # names of nodes not yet ACKed this step
 
-    # -- barrier: receive ACKs over the channel, advance when all in ----------
     def receive_message(self, src: str, msg: Message) -> None:
+        """Receive ACKs over the channel and advance once all nodes have acknowledged.
+        barrier: receive ACKs over the channel, advance when all in
+        """
         if not self._is_ack(msg):
             return
         self._apply_deltas(msg)                   # fold any move relocations into the registry
