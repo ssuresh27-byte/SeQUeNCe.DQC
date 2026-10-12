@@ -61,7 +61,8 @@ def purification_policy(_hops):
 def _program_metrics(program, topology):
     """Network costs from a compiled program; each swap counts as two teledata moves."""
     q2n = program.qubit_to_node
-    hist = Counter(); seen = set()
+    hist = Counter()
+    seen = set()
     for grp in program.node_ops.values():
         for op in grp["remote"]:
             key = (op["layer"], tuple(sorted(op["targets"])))
@@ -179,7 +180,8 @@ class Run:
                 continue
             nd = qn[nm]
             key = nd.get_component_by_name(nd.data_memo_arr_name)[slot].qstate_key
-            c = Circuit(1); c.measure(0)
+            c = Circuit(1)
+            c.measure(0)
             meas[gq] = tl.quantum_manager.run_circuit(c, [key], rng.random())[key]
         return sum(b << gq for gq, b in meas.items())
 
@@ -197,7 +199,9 @@ class Run:
                 if "seed" in nd:
                     nd["seed"] = nd["seed"] + noise_seed
         with contextlib.redirect_stdout(io.StringIO()):
-            net = DQCNetTopo(config); tl = net.tl; qm = tl.quantum_manager
+            net = DQCNetTopo(config)
+            tl = net.tl
+            qm = tl.quantum_manager
             qn = {node.name: node for node in net.nodes[DQCNetTopo.DQC_NODE]}
             ctrl = net.controller                       # a bare executor built + wired by DQCNetTopo
             # Compilation lives here, not in the controller: build the compiler (a custom object
@@ -211,8 +215,11 @@ class Run:
             wp.RESERVATION_SLACK_CC_MULT = 6 * max(metrics[2], 1)
             tl.stop_time = int((program.max_step + 16) * STOP_BUDGET * 8)
             self._attach_agents(qn, ctrl, net.hop_distances())
-            tl.init(); ctrl.start_execution()
-            t0 = time.time(); tl.run(); wall = time.time() - t0
+            tl.init()
+            ctrl.start_execution()
+            t0 = time.time()
+            tl.run()
+            wall = time.time() - t0
             measured = self._measure(qn, ctrl, tl, shot_rng)
             return measured, ctrl.current, program, metrics, wall, tl.now() / 1e9
 

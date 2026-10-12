@@ -205,7 +205,8 @@ class DQCArchitecture:
         for (u, v) in self.edges:
             bsm = f"BSM_{u}_{v}"
             bsm_nodes.append({"name": bsm, "type": "BSMNode", "seed": seed,
-                              "group": 0, "template": "teleportation"}); seed += 1
+                              "group": 0, "template": "teleportation"})
+            seed += 1
             for r in (u, v):
                 qch.append({"source": r, "destination": bsm, "distance": d, "attenuation": 0.0002})
                 cch.append({"source": r, "destination": bsm, "delay": delay})

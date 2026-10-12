@@ -36,7 +36,9 @@ class TopologyAwarePartitioner(PartitionerBase):
         if sum(cap.values()) < n:
             raise ValueError(f"total node capacity {sum(cap.values())} < {n} qubits")
 
-        G = nx.Graph(); G.add_nodes_from(names); G.add_edges_from(self._edges)
+        G = nx.Graph()
+        G.add_nodes_from(names)
+        G.add_edges_from(self._edges)
         apsp = dict(nx.all_pairs_shortest_path_length(G))
         BIG = 10 ** 6
         def D(a, b):
@@ -64,7 +66,8 @@ class TopologyAwarePartitioner(PartitionerBase):
                 cand = [nm for nm in names if load[nm] < cap[nm]]
                 nm = min(cand, key=lambda nm: (
                     sum(w * D(nm, assign[nbr]) for nbr, w in adj[q].items() if nbr in assign), load[nm]))
-                assign[q] = nm; load[nm] += 1
+                assign[q] = nm
+                load[nm] += 1
             assign = self._refine(assign, adj, names, cap, load, D)
             c = total(assign)
             if best_cost is None or c < best_cost:
@@ -77,12 +80,16 @@ class TopologyAwarePartitioner(PartitionerBase):
     def _bfs_order(root, adj, n):
         """BFS over the interaction graph (heaviest neighbours first), so strongly-
         interacting qubits are placed consecutively -> onto nearby nodes."""
-        seen = {root}; order = [root]; queue = [root]
+        seen = {root}
+        order = [root]
+        queue = [root]
         while queue:
             q = queue.pop(0)
             for nbr, _ in sorted(adj[q].items(), key=lambda kv: -kv[1]):
                 if nbr not in seen:
-                    seen.add(nbr); order.append(nbr); queue.append(nbr)
+                    seen.add(nbr)
+                    order.append(nbr)
+                    queue.append(nbr)
         for q in range(n):
             if q not in seen:
                 order.append(q)
@@ -98,7 +105,8 @@ class TopologyAwarePartitioner(PartitionerBase):
         while improved:
             improved = False
             for q in range(len(assign)):
-                cur = assign[q]; cur_cost = self._cost_q(q, cur, assign, adj, D)
+                cur = assign[q]
+                cur_cost = self._cost_q(q, cur, assign, adj, D)
                 best, best_delta = cur, 0
                 for nm in names:
                     if nm == cur or load[nm] >= cap[nm]:
@@ -107,7 +115,10 @@ class TopologyAwarePartitioner(PartitionerBase):
                     if delta < best_delta:
                         best_delta, best = delta, nm
                 if best != cur:
-                    load[cur] -= 1; load[best] += 1; assign[q] = best; improved = True
+                    load[cur] -= 1
+                    load[best] += 1
+                    assign[q] = best
+                    improved = True
             for q in range(len(assign)):
                 for r in range(q + 1, len(assign)):
                     na, nb = assign[q], assign[r]
@@ -132,7 +143,8 @@ class TopologyAwarePartitioner(PartitionerBase):
     def weighted_distance(qubit_to_node, interaction_weights, edges):
         """Total sum weight(i,j) * hop_distance -- the objective this minimises."""
         import networkx as nx
-        G = nx.Graph(); G.add_edges_from(edges)
+        G = nx.Graph()
+        G.add_edges_from(edges)
         apsp = dict(nx.all_pairs_shortest_path_length(G))
         return sum(w * apsp.get(qubit_to_node[i], {}).get(qubit_to_node[j], 10 ** 6)
                    for (i, j), w in interaction_weights.items()

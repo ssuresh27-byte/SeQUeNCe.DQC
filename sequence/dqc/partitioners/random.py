@@ -25,5 +25,6 @@ class RandomPartitioner(PartitionerBase):
             if not free:
                 raise ValueError("topology capacity exhausted for random placement")
             nm = rng.choice(free)
-            self.qubit_to_node[q] = nm; load[nm] += 1
+            self.qubit_to_node[q] = nm
+            load[nm] += 1
         return self.qubit_to_node

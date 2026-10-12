@@ -37,7 +37,9 @@ class QAPPartitioner(PartitionerBase):
             raise ValueError(f"total capacity {n_slots} < {n} qubits")
 
         slot_node = [nm for nm in names for _ in range(caps[nm])]   # slot -> node
-        G = nx.Graph(); G.add_nodes_from(names); G.add_edges_from(self._edges)
+        G = nx.Graph()
+        G.add_nodes_from(names)
+        G.add_edges_from(self._edges)
         apsp = dict(nx.all_pairs_shortest_path_length(G))
         def hop(a, b):
             return 0 if a == b else apsp.get(a, {}).get(b, 10 ** 6)
@@ -47,7 +49,8 @@ class QAPPartitioner(PartitionerBase):
         F = np.zeros((n_slots, n_slots))                            # flow (qubits padded w/ dummies)
         for (i, j), w in (interaction_weights or {}).items():
             if i < n and j < n and i != j:
-                F[i][j] += w; F[j][i] += w
+                F[i][j] += w
+                F[j][i] += w
 
         best = None
         for k in range(max(1, starts)):

@@ -114,7 +114,9 @@ class QuantumManagerKetNoise(QuantumManagerKet):
     def _pauli(self, key: int, p: str) -> None:
         """Apply a single Pauli ``p`` on ``key`` via the ideal path (never re-noised)."""
         from ..components.circuit import Circuit
-        c = Circuit(1); getattr(c, p)(0); super().run_circuit(c, [key])
+        c = Circuit(1)
+        getattr(c, p)(0)
+        super().run_circuit(c, [key])
 
     def apply_noise(self, keys, noise_type, amount, is_infidelity=True) -> None:
         """Plug-in primitive (same signature as the density manager). A ket is pure, so the
@@ -158,7 +160,8 @@ class QuantumManagerKetNoise(QuantumManagerKet):
             if idle_s <= 0:
                 continue
             if u1 is not None and self.noise_rng.random() < relaxation_prob(idle_s, u1):
-                c = Circuit(1); c.measure(0)
+                c = Circuit(1)
+                c.measure(0)
                 if super().run_circuit(c, [key], self.noise_rng.random()).get(key) == 1:
                     self._pauli(key, "x")
             if self.noise_rng.random() < dephasing_z_prob(idle_s, u1, u2):
@@ -263,7 +266,8 @@ class QuantumManagerDensityNoise(QuantumManagerDensity):
             arg = gate[2] if len(gate) > 2 else None
             gate_keys = [keys[j] for j in indices]
             mapped = [pos[k] for k in gate_keys]
-            g = Circuit(n); g.gates.append([name, mapped, arg])
+            g = Circuit(n)
+            g.gates.append([name, mapped, arg])
             gmat = g.get_unitary_matrix()
             rho = gmat @ rho @ gmat.conj().T
             if len(gate_keys) == 1:
