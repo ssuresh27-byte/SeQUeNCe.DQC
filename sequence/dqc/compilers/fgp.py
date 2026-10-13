@@ -130,8 +130,6 @@ class FGPCompiler(CompilerBase):
         """Use relaxed OEE to greedily choose positive-gain moves and swaps within capacity.
 
         Return the new placement and ordered move/swap stream operations.
-
-        relaxed OEE: greedy positive-gain moves and swaps, capacity-bound
         """
         A = dict(A)
         moves: List[tuple] = []

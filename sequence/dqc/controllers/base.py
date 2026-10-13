@@ -19,6 +19,7 @@ leaves to subclasses is *when* steps are sent and *how* completions advance the 
 """
 from __future__ import annotations
 
+from sequence.dqc.registry import QubitRegistry
 import time
 
 from sequence.topology.node import ClassicalNode
@@ -78,7 +79,7 @@ class BaseController(ClassicalNode):
         self._completed = False
 
     def load(self, program):
-        """Install a compiled ``program`` to execute and prepare the controller's run state.
+        """Install a compiled ``program`` (produced by the runner) to execute and prepare the controller's run state.
 
         Compilation happens OUTSIDE the controller: the runner builds the compiler, runs it
         (``compiler.compile(circuit, topology, seed)``), and hands the resulting plan here. The
@@ -87,8 +88,6 @@ class BaseController(ClassicalNode):
 
         Args:
             program (CompiledProgram): the plan to execute (from ``compiler.compile``).
-
-        load: install a pre-compiled program (produced by the runner)
         """
         self.program = program
         self.max_step = program.max_step
@@ -102,7 +101,6 @@ class BaseController(ClassicalNode):
         the program's initial logical->physical placement, and inject it into the quantum
         manager so the noise layer reads the SAME map the controller evolves. This is the one
         source of truth for where each logical qubit lives (node/slot) and its qstate key."""
-        from sequence.dqc.registry import QubitRegistry
         self.registry = QubitRegistry()
         self.registry.seed_placement(self.program.qubit_to_node, self.program.data_owners)
         self._move_slots: dict = {}                # step -> {qubit: runtime-assigned dest slot}

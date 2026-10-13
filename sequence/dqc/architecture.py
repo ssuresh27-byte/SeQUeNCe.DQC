@@ -17,6 +17,7 @@ be turned into a DQCArchitecture via :meth:`DQCArchitecture.from_nx_graph`.
 """
 from __future__ import annotations
 
+from collections import Counter
 import json
 from typing import Dict, List, Tuple
 
@@ -88,7 +89,8 @@ class DQCArchitecture:
     def add_node(self, name: str, data_qubits: int = 1, *,
                  one_qubit_gate_fid: float = 1.0, two_qubit_gate_fid: float = 1.0,
                  measurement_fid: float = 1.0, t1: float = None, t2: float = None) -> "DQCArchitecture":
-        """Add (or update) a node with its data-memory capacity and per-node local noise.
+        """Incremental construction (node-centric builder): 
+        Add (or update) a node with its data-memory capacity and per-node local noise.
 
         Noise knobs left at their ideal defaults are omitted, so a node is ideal unless a
         knob is set; re-adding a node with all-ideal knobs clears any prior noise on it.
@@ -104,8 +106,6 @@ class DQCArchitecture:
 
         Returns:
             DQCArchitecture: self (so calls can be chained).
-
-        incremental construction (node-centric builder)
         """
         self.capacities[name] = data_qubits
         noise = {}
@@ -144,11 +144,10 @@ class DQCArchitecture:
     @classmethod
     def from_nx_graph(cls, name: str, G: nx.Graph, cap: int, comm_memo: int = 16,
                       node_noise: Dict[str, dict] = None, order=None) -> "DQCArchitecture":
-        """Build a DQCArchitecture from a NetworkX graph, mapping its vertices to node
-        names (in ``order`` if given, else ``G.nodes()`` order) and giving every node
-        the same data-memory ``cap``. Lets any :mod:`sequence.utils.graphs` builder
-        (or a custom graph) feed the DQC stack.
-        construction from a NetworkX graph (reuse sequence.utils.graphs)
+        """Construction from a NetworkX graph (reuse sequence.utils.graphs). 
+        Build a DQCArchitecture from a NetworkX graph, mapping its vertices to node names 
+        (in ``order`` if given, else ``G.nodes()`` order) and giving every node the same data-memory ``cap``.
+        Lets any :mod:`sequence.utils.graphs` builder (or a custom graph) feed the DQC stack.
         """
         seq = list(order) if order is not None else list(G.nodes())
         names = node_names(len(seq))
@@ -158,9 +157,7 @@ class DQCArchitecture:
         return cls(name, caps, edges, comm_memo, node_noise)
 
     def to_dict(self) -> dict:
-        """Return the architecture configuration as a serializable dictionary.
-        persistence
-        """
+        """Return the architecture configuration as a serializable dictionary."""
         d = {"name": self.name, "capacities": self.capacities,
              "edges": [list(e) for e in self.edges], "comm_memo": self.comm_memo}
         if self.node_noise:
@@ -182,12 +179,11 @@ class DQCArchitecture:
 
     def generate_nodes(self, comm_memo: int = None) -> List[dict]:
         """DQCNode config entries (parallels :func:`sequence.utils.nx_converter.generate_nodes`).
+        Expansion to the DQCNetTopo config (the DQC parallel of utils.nx_converter)
 
         ``capacity`` is the LOGICAL data-qubit capacity the compiler partitions against;
         ``data_memo_size`` is the PHYSICAL memory allocation (the runtime may bump it to hold
         every qubit slot); per-node noise appears inline on each DQCNode entry.
-
-        expansion to the DQCNetTopo config (the DQC parallel of utils.nx_converter)
         """
         comm = self.comm_memo if comm_memo is None else comm_memo
         return [{"name": nm, "type": "DQCNode", "seed": i + 1,
@@ -306,7 +302,6 @@ def make_caveman(caves: int, size: int, cap: int, comm_memo: int = 16, node_nois
 
 def max_node_degree(edges) -> int:
     """Largest node degree in an edge list (0 for an empty/edgeless graph)."""
-    from collections import Counter
     deg = Counter()
     for a, b in edges:
         deg[a] += 1

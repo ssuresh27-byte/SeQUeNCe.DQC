@@ -60,8 +60,7 @@ class QasmCircuitBuilder(CircuitBuilder):
         return circ
 
     def _clean(self) -> str:
-        """The source with block (``/* */``) and line (``//``) comments stripped.
-        parsing helpers
+        """Parsing helpers: the source with block (``/* */``) and line (``//``) comments stripped.
         """
         s = re.sub(r"/\*.*?\*/", "", self.qasm, flags=re.S)
         return re.sub(r"//[^\n]*", "", s)

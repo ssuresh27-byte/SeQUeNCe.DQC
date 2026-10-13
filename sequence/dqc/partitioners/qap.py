@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Placement via the Quadratic Assignment Problem (scipy FAQ solver)."""
+import numpy as np
+import networkx as nx
+from scipy.optimize import quadratic_assignment
 from typing import Dict, Tuple
 
 from sequence.dqc.partitioners.base import PartitionerBase
@@ -26,9 +29,6 @@ class QAPPartitioner(PartitionerBase):
 
     def partition_qubits(self, interaction_weights: Dict[Tuple[int, int], int] = None,
                          seed: int = 0, starts: int = 6) -> Dict[int, str]:
-        import numpy as np
-        import networkx as nx
-        from scipy.optimize import quadratic_assignment
         n = self.n_qubits
         names = self.node_names
         caps = {nm: int(self._capacities[nm]) for nm in names}

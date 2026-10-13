@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Topology-aware placement compiler (Andres-Martinez et al. 2023)."""
+import networkx as nx
 from typing import Dict, Tuple
 
 from sequence.dqc.partitioners.base import PartitionerBase
@@ -29,7 +30,6 @@ class TopologyAwarePartitioner(PartitionerBase):
 
     def partition_qubits(self, interaction_weights: Dict[Tuple[int, int], int] = None,
                          seed: int = 0) -> Dict[int, str]:
-        import networkx as nx
         n = self.n_qubits
         names = self.node_names
         cap = {nm: int(self._capacities.get(nm, 0)) for nm in names}
@@ -142,7 +142,6 @@ class TopologyAwarePartitioner(PartitionerBase):
     @staticmethod
     def weighted_distance(qubit_to_node, interaction_weights, edges):
         """Total sum weight(i,j) * hop_distance -- the objective this minimises."""
-        import networkx as nx
         G = nx.Graph()
         G.add_edges_from(edges)
         apsp = dict(nx.all_pairs_shortest_path_length(G))

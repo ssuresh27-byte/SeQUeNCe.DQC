@@ -32,6 +32,8 @@ from ..constants import KET_VECTOR_FORMALISM, DENSITY_MATRIX_FORMALISM
 from ..kernel.quantum_manager import QuantumManager
 from ..kernel.quantum_manager.ket_vector import QuantumManagerKet
 from ..kernel.quantum_manager.density_matrix import QuantumManagerDensity
+from ..kernel.quantum_manager.utils import validate_circuit_run
+from ..kernel.quantum_state import DensityState
 from ..components.circuit import Circuit
 from .registry import QubitRegistry
 
@@ -44,7 +46,6 @@ DENSITY_MATRIX_NOISE_FORMALISM = "density_matrix_noise"
 def gate_error_prob(infidelity: float, num_qubits: int) -> float:
     """Average gate infidelity -> error-channel probability p = (d+1)/d * infid, capped at
     1, with d = 2**num_qubits (1.5*infid for 1-qubit, 1.25*infid for 2-qubit gates).
-
 
     shared fidelity -> probability + T1/T2 math
     """
@@ -116,7 +117,6 @@ class QuantumManagerKetNoise(QuantumManagerKet):
 
     def _pauli(self, key: int, p: str) -> None:
         """Apply a single Pauli ``p`` on ``key`` via the ideal path (never re-noised)."""
-        from ..components.circuit import Circuit
         c = Circuit(1)
         getattr(c, p)(0)
         super().run_circuit(c, [key])
@@ -251,9 +251,6 @@ class QuantumManagerDensityNoise(QuantumManagerDensity):
         """Apply a circuit. When ``inject_gate_error`` OR any of ``keys`` is on a noisy node,
         run gate-by-gate with a CPTP channel after each gate at the owning node's fidelity
         (plus idle T1/T2 and readout error); otherwise the pristine ideal path."""
-        from ..components.circuit import Circuit
-        from ..kernel.quantum_state import DensityState
-        from ..kernel.quantum_manager.utils import validate_circuit_run
         if not (inject_gate_error or self.registry.noise_active(keys)):
             return super().run_circuit(circuit, keys, meas_samp)
 
