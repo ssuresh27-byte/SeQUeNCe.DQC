@@ -59,9 +59,9 @@ class QasmCircuitBuilder(CircuitBuilder):
             self._add(circ, stmt, offsets)
         return circ
 
-    # ── parsing helpers ──────────────────────────────────────────────────────
     def _clean(self) -> str:
-        """The source with block (``/* */``) and line (``//``) comments stripped."""
+        """Parsing helpers: the source with block (``/* */``) and line (``//``) comments stripped.
+        """
         s = re.sub(r"/\*.*?\*/", "", self.qasm, flags=re.S)
         return re.sub(r"//[^\n]*", "", s)
 

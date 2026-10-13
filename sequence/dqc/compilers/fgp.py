@@ -3,7 +3,7 @@
 
 The literature hybrid telegate + teledata compiler (Baker, Duckering, Hoffman,
 Chong, "Time-sliced quantum circuit partitioning for modular architectures",
-ACM Computing Frontiers 2020 -- FGP-rOEE): 
+ACM Computing Frontiers 2020 -- FGP-rOEE):
 https://dl.acm.org/doi/pdf/10.1145/3387902.3392617
 Unlike the static two-stage
 :class:`~compilers.basic.BasicCompiler`, this is MONOLITHIC: it chooses a
@@ -32,7 +32,8 @@ from sequence.dqc.circuit_ops import gate_fields
 
 
 class FGPCompiler(CompilerBase):
-    """FGP-rOEE time-sliced hybrid compiler (see module docstring)."""
+    """FGP-rOEE time-sliced hybrid compiler (see module docstring).
+    """
 
     lookahead = 10       # how many future slices influence the current partition
     _CUR = 1_000_000     # weight of current-slice edges (force them to localise)
@@ -52,8 +53,10 @@ class FGPCompiler(CompilerBase):
         if move_margin is not None:
             self.move_margin = move_margin
 
-    # ── compile: seed placement + time-sliced partition/schedule ─────────────
     def compile(self, circuit, topology, seed: int = 0):
+        """Seed the placement, then partition and schedule the circuit in time slices.
+        compile: seed placement + time-sliced partition/schedule
+        """
         self.n_qubits = circuit.size
         self.node_names = topology.node_names
         self._edges = list(topology.edges)
@@ -69,8 +72,9 @@ class FGPCompiler(CompilerBase):
     def _caps(self) -> Dict[str, int]:
         return dict(self._capacities)
 
-    # ── plan ─────────────────────────────────────────────────────────────────
     def _compile_circuit(self, circuit):
+        """Plan placement changes for each time slice and schedule the resulting operations.
+        """
         raw = getattr(circuit, "ops", getattr(circuit, "gates", []))
         parsed = [gate_fields(op) for op in raw]                 # (name, qubits, arg)
         slices = self._time_slices(parsed)                       # list of gate-index lists
@@ -92,9 +96,10 @@ class FGPCompiler(CompilerBase):
                 stream.append(("gate", name, list(qs), arg))
         return self._schedule_and_bucketize(stream)
 
-    # ── time slices: packed dependency layers ──────────────────────────────────
     @staticmethod
     def _time_slices(parsed) -> List[List[int]]:
+        """Pack gates into dependency layers, preserving their order on each qubit.
+        """
         free: Dict[int, int] = {}
         slices: Dict[int, List[int]] = defaultdict(list)
         for i, (_name, qs, _arg) in enumerate(parsed):
@@ -104,8 +109,9 @@ class FGPCompiler(CompilerBase):
                 free[q] = L + 1
         return [slices[t] for t in sorted(slices)]
 
-    # ── lookahead-weighted interaction graph for slice t ────────────────────────
     def _lookahead_graph(self, parsed, slices, t) -> Dict[Tuple[int, int], float]:
+        """Build the lookahead-weighted interaction graph for slice ``t``.
+        """
         W: Dict[Tuple[int, int], float] = defaultdict(float)
         last = min(len(slices), t + 1 + self.lookahead)
         for d, tt in enumerate(range(t, last)):
@@ -120,9 +126,11 @@ class FGPCompiler(CompilerBase):
                     W[(i, j)] += weight
         return W
 
-    # ── relaxed OEE: greedy positive-gain moves and swaps, capacity-bound ──
     def _roee(self, A: Dict[int, str], W, caps):
-        """Return the new placement and ordered move/swap stream operations."""
+        """Use relaxed OEE to greedily choose positive-gain moves and swaps within capacity.
+
+        Return the new placement and ordered move/swap stream operations.
+        """
         A = dict(A)
         moves: List[tuple] = []
         sizes = Counter(A.values())
@@ -177,8 +185,10 @@ class FGPCompiler(CompilerBase):
             sizes[M] += 1
             A[q] = M
 
-    # ── layering (packed by qubit dependency) + bucketize ───────────────────────
     def _schedule_and_bucketize(self, stream):
+        """Assign dependency layers and bucket the operation stream by node.
+        layering (packed by qubit dependency) + bucketize
+        """
         # placement/order are already fixed in ``stream``; the shared scheduler assigns compact
         # physical slots + step-safe timing (see program.stream_to_node_ops).
         return stream_to_node_ops(stream, self.node_names, self.qubit_to_node, self._caps())

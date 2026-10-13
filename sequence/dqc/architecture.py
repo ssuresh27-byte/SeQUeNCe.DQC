@@ -17,6 +17,7 @@ be turned into a DQCArchitecture via :meth:`DQCArchitecture.from_nx_graph`.
 """
 from __future__ import annotations
 
+from collections import Counter
 import json
 from typing import Dict, List, Tuple
 
@@ -85,11 +86,11 @@ class DQCArchitecture:
         """Node names in insertion order (derived from ``capacities``)."""
         return list(self.capacities)
 
-    # ── incremental construction (node-centric builder) ─────────────────
     def add_node(self, name: str, data_qubits: int = 1, *,
                  one_qubit_gate_fid: float = 1.0, two_qubit_gate_fid: float = 1.0,
                  measurement_fid: float = 1.0, t1: float = None, t2: float = None) -> "DQCArchitecture":
-        """Add (or update) a node with its data-memory capacity and per-node local noise.
+        """Incremental construction (node-centric builder): 
+        Add (or update) a node with its data-memory capacity and per-node local noise.
 
         Noise knobs left at their ideal defaults are omitted, so a node is ideal unless a
         knob is set; re-adding a node with all-ideal knobs clears any prior noise on it.
@@ -140,14 +141,14 @@ class DQCArchitecture:
         self.edges.append((a, b))
         return self
 
-    # ── construction from a NetworkX graph (reuse sequence.utils.graphs) ──
     @classmethod
     def from_nx_graph(cls, name: str, G: nx.Graph, cap: int, comm_memo: int = 16,
                       node_noise: Dict[str, dict] = None, order=None) -> "DQCArchitecture":
-        """Build a DQCArchitecture from a NetworkX graph, mapping its vertices to node
-        names (in ``order`` if given, else ``G.nodes()`` order) and giving every node
-        the same data-memory ``cap``. Lets any :mod:`sequence.utils.graphs` builder
-        (or a custom graph) feed the DQC stack."""
+        """Construction from a NetworkX graph (reuse sequence.utils.graphs). 
+        Build a DQCArchitecture from a NetworkX graph, mapping its vertices to node names 
+        (in ``order`` if given, else ``G.nodes()`` order) and giving every node the same data-memory ``cap``.
+        Lets any :mod:`sequence.utils.graphs` builder (or a custom graph) feed the DQC stack.
+        """
         seq = list(order) if order is not None else list(G.nodes())
         names = node_names(len(seq))
         idx = {v: names[i] for i, v in enumerate(seq)}
@@ -155,8 +156,8 @@ class DQCArchitecture:
         edges = [(idx[u], idx[v]) for u, v in G.edges()]
         return cls(name, caps, edges, comm_memo, node_noise)
 
-    # ── persistence ─────────────────────────────────────────────────────
     def to_dict(self) -> dict:
+        """Return the architecture configuration as a serializable dictionary."""
         d = {"name": self.name, "capacities": self.capacities,
              "edges": [list(e) for e in self.edges], "comm_memo": self.comm_memo}
         if self.node_noise:
@@ -164,19 +165,21 @@ class DQCArchitecture:
         return d
 
     def save(self, path: str) -> None:
+        """Save the architecture configuration as JSON."""
         with open(path, "w") as f:
             json.dump(self.to_dict(), f, indent=2)
 
     @classmethod
     def load(cls, path: str) -> "DQCArchitecture":
+        """Load an architecture from its saved JSON configuration."""
         with open(path) as f:
             d = json.load(f)
         return cls(d["name"], d["capacities"], d["edges"], d.get("comm_memo", 16),
                    d.get("node_noise"))
 
-    # ── expansion to the DQCNetTopo config (the DQC parallel of utils.nx_converter) ──
     def generate_nodes(self, comm_memo: int = None) -> List[dict]:
         """DQCNode config entries (parallels :func:`sequence.utils.nx_converter.generate_nodes`).
+        Expansion to the DQCNetTopo config (the DQC parallel of utils.nx_converter)
 
         ``capacity`` is the LOGICAL data-qubit capacity the compiler partitions against;
         ``data_memo_size`` is the PHYSICAL memory allocation (the runtime may bump it to hold
@@ -205,7 +208,8 @@ class DQCArchitecture:
         for (u, v) in self.edges:
             bsm = f"BSM_{u}_{v}"
             bsm_nodes.append({"name": bsm, "type": "BSMNode", "seed": seed,
-                              "group": 0, "template": "teleportation"}); seed += 1
+                              "group": 0, "template": "teleportation"})
+            seed += 1
             for r in (u, v):
                 qch.append({"source": r, "destination": bsm, "distance": d, "attenuation": 0.0002})
                 cch.append({"source": r, "destination": bsm, "delay": delay})
@@ -251,19 +255,22 @@ Topology = DQCArchitecture
 DQCTopology = DQCArchitecture
 
 
-# ── generators: build on SeQUeNCe's pre-packaged NetworkX graph builders ──
 def make_star(n_nodes: int, cap: int, comm_memo: int = 16, node_noise=None) -> DQCArchitecture:
     """Hub-and-spoke: node 0 is the hub, adjacent to every spoke.
 
     Wraps :func:`sequence.utils.graphs.build_star` (``star_graph(n_nodes-1)``: one
-    center + ``n_nodes-1`` outer nodes)."""
+    center + ``n_nodes-1`` outer nodes).
+
+
+    generators: build on SeQUeNCe's pre-packaged NetworkX graph builders
+    """
     G = graphs.build_star(n_nodes - 1)
     return DQCArchitecture.from_nx_graph(f"star{n_nodes}_cap{cap}", G, cap, comm_memo,
                                      node_noise, order=range(n_nodes))
 
 
 def make_grid(rows: int, cols: int, cap: int, comm_memo: int = 16, node_noise=None) -> DQCArchitecture:
-    """R×C mesh: node at (r,c) adjacent to Manhattan-distance-1 neighbours.
+    """RxC mesh: node at (r,c) adjacent to Manhattan-distance-1 neighbours.
 
     Wraps :func:`sequence.utils.graphs.build_grid`; vertices ``(r, c)`` are named
     row-major (``r*cols + c``)."""
@@ -295,7 +302,6 @@ def make_caveman(caves: int, size: int, cap: int, comm_memo: int = 16, node_nois
 
 def max_node_degree(edges) -> int:
     """Largest node degree in an edge list (0 for an empty/edgeless graph)."""
-    from collections import Counter
     deg = Counter()
     for a, b in edges:
         deg[a] += 1

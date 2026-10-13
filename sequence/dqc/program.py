@@ -9,6 +9,7 @@ canonical ASAP layering is stamped back onto the op buckets as each op's ``step`
 """
 from __future__ import annotations
 
+import heapq
 from dataclasses import dataclass
 from typing import Any, Dict, List, Set
 
@@ -188,7 +189,6 @@ def stream_to_node_ops(stream, node_names, qubit_to_node, caps=None):
     Stream ops: ``("gate", name, [qubits], arg)``, ``("move", qubit, dest_node, src_node)``,
     and ``("swap", qubit_a, node_a, qubit_b, node_b)``. Swaps exchange occupied slots.
     """
-    import heapq
     caps = dict(caps) if caps else {}
     node_of = dict(qubit_to_node)
     slot_of: Dict[int, int] = {}

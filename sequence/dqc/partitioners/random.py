@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Random placement compiler -- the naive, topology-unaware baseline."""
+import random
 from typing import Dict, Tuple
 
 from sequence.dqc.partitioners.base import PartitionerBase
@@ -15,8 +16,7 @@ class RandomPartitioner(PartitionerBase):
 
     def partition_qubits(self, interaction_weights: Dict[Tuple[int, int], int] = None,
                          seed: int = 0) -> Dict[int, str]:
-        import random as _random
-        rng = _random.Random(seed)
+        rng = random.Random(seed)
         cap = getattr(self, "_capacities", None) or {nm: self.memory_capacity for nm in self.node_names}
         load = {nm: 0 for nm in self.node_names}
         self.qubit_to_node = {}
@@ -25,5 +25,6 @@ class RandomPartitioner(PartitionerBase):
             if not free:
                 raise ValueError("topology capacity exhausted for random placement")
             nm = rng.choice(free)
-            self.qubit_to_node[q] = nm; load[nm] += 1
+            self.qubit_to_node[q] = nm
+            load[nm] += 1
         return self.qubit_to_node

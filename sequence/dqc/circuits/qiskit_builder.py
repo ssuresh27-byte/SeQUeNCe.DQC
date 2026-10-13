@@ -3,13 +3,20 @@
 
 Lets DQC circuits be written in the familiar Qiskit form and consumed by the DQC compiler, which
 operates on :class:`sequence.components.circuit.Circuit`. Only the gate set SeQUeNCe supports is
-translated; any other Qiskit gate raises a clear error. Qiskit is imported lazily (only
-:meth:`from_qasm` needs it), so this module imports fine without Qiskit installed.
+translated; any other Qiskit gate raises a clear error. Qiskit is optional; only
+:meth:`from_qasm` requires it to be installed.
 """
 from __future__ import annotations
 
 from sequence.components.circuit import Circuit
 from sequence.dqc.circuits.base import CircuitBuilder
+
+try:
+    from qiskit import QuantumCircuit
+except ModuleNotFoundError as exc:
+    if exc.name != "qiskit":
+        raise
+    QuantumCircuit = None
 
 
 class QiskitCircuitBuilder(CircuitBuilder):
@@ -40,7 +47,8 @@ class QiskitCircuitBuilder(CircuitBuilder):
         Args:
             qasm (str): OpenQASM 2.0 source.
         """
-        from qiskit import QuantumCircuit
+        if QuantumCircuit is None:
+            raise ModuleNotFoundError("Qiskit is required to parse QASM with QiskitCircuitBuilder.", name="qiskit")
         return cls(QuantumCircuit.from_qasm_str(qasm))
 
     def build(self) -> Circuit:

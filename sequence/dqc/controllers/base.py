@@ -19,6 +19,7 @@ leaves to subclasses is *when* steps are sent and *how* completions advance the 
 """
 from __future__ import annotations
 
+from sequence.dqc.registry import QubitRegistry
 import time
 
 from sequence.topology.node import ClassicalNode
@@ -61,8 +62,7 @@ class BaseController(ClassicalNode):
             reflects real network cost rather than a flat local-gate barrier).
     """
 
-    def __init__(self, name: str, timeline,
-                 dt: float = 0.0, local_dt: float = None):
+    def __init__(self, name: str, timeline, dt: float = 0.0, local_dt: float = None):
         super().__init__(name, timeline)          # ClassicalNode -> registers on timeline
         self.dt = dt
         self.local_dt = dt if local_dt is None else local_dt
@@ -78,9 +78,8 @@ class BaseController(ClassicalNode):
         self.current = 0                          # highest completed step + 1
         self._completed = False
 
-    # ── load: install a pre-compiled program (produced by the runner) ─────────
     def load(self, program):
-        """Install a compiled ``program`` to execute and prepare the controller's run state.
+        """Install a compiled ``program`` (produced by the runner) to execute and prepare the controller's run state.
 
         Compilation happens OUTSIDE the controller: the runner builds the compiler, runs it
         (``compiler.compile(circuit, topology, seed)``), and hands the resulting plan here. The
@@ -102,7 +101,6 @@ class BaseController(ClassicalNode):
         the program's initial logical->physical placement, and inject it into the quantum
         manager so the noise layer reads the SAME map the controller evolves. This is the one
         source of truth for where each logical qubit lives (node/slot) and its qstate key."""
-        from sequence.dqc.registry import QubitRegistry
         self.registry = QubitRegistry()
         self.registry.seed_placement(self.program.qubit_to_node, self.program.data_owners)
         self._move_slots: dict = {}                # step -> {qubit: runtime-assigned dest slot}
@@ -151,7 +149,6 @@ class BaseController(ClassicalNode):
         self.qnodes = list(qnodes)
         return self
 
-    # ── talk to the per-node worker programs ────────────────────────────────────────
     def send_step(self, node_name: str, step: int) -> None:
         """Dispatch controller ``step`` to one node's worker program over the classical channel,
         carrying that node's ops for the step (resolved from the compiled program).
@@ -238,11 +235,10 @@ class BaseController(ClassicalNode):
             self.registry.place(d["qubit"], d["node"], d["slot"])
             self.registry.set_key(d["qubit"], d["key"])
 
-    # ── run lifecycle ─────────────────────────────────────────────────────────
     def start_execution(self) -> None:
         """Kick off the run (call after ``timeline.init()``). Stamps the wall-clock
-        start used by the progress readout, then hands off to the policy's
-        :meth:`_start`."""
+        start used by the progress readout, then hands off to the policy's :meth:`_start`.
+        """
         self._t_start = time.time()
         self._start()
 
