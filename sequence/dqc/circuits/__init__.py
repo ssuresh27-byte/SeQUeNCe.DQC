@@ -5,7 +5,7 @@ Concrete circuit builders subclass :class:`CircuitBuilder` and return a topology
 common form into that:
 
 * :class:`QutipCircuitBuilder` -- from a ``qutip_qip`` ``QubitCircuit``;
-* :class:`QiskitCircuitBuilder` -- from a Qiskit ``QuantumCircuit`` (optional dependency);
+* :class:`QiskitCircuitBuilder` -- from a Qiskit ``QuantumCircuit`` (Qiskit imported lazily);
 * :class:`QasmCircuitBuilder` -- from an OpenQASM 2.0 string (self-contained parser, no deps).
 
 Application-specific builders (e.g. Grover) live outside this library.
