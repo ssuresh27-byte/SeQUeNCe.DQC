@@ -8,8 +8,6 @@ ket-vector quantum manager (trajectory noise); see
 """
 from .architecture import (
     DQCArchitecture,
-    DQCTopology,   # back-compat alias of DQCArchitecture
-    Topology,      # back-compat alias of DQCArchitecture
     node_names,
     make_star,
     make_grid,
@@ -18,8 +16,6 @@ from .architecture import (
 
 __all__ = [
     "DQCArchitecture",
-    "DQCTopology",
-    "Topology",
     "node_names",
     "make_star",
     "make_grid",

@@ -250,11 +250,6 @@ class DQCArchitecture:
                 "stop_time": 10_000_000_000_000, "is_parallel": False}
 
 
-# Back-compat / convenience aliases.
-Topology = DQCArchitecture
-DQCTopology = DQCArchitecture
-
-
 def make_star(n_nodes: int, cap: int, comm_memo: int = 16, node_noise=None) -> DQCArchitecture:
     """Hub-and-spoke: node 0 is the hub, adjacent to every spoke.
 
