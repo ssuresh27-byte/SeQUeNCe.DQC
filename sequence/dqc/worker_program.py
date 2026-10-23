@@ -32,14 +32,14 @@ from abc import ABC, abstractmethod
 from enum import Enum, auto
 from typing import Any, Callable, Dict, List, Optional
 
-from sequence.message import Message
-from sequence.components.circuit import Circuit
-from sequence.kernel.process import Process
-from sequence.kernel.event import Event
-from sequence.utils import log
-from sequence.app.teleportation import TeleportationApp
-from sequence.constants import TELEGATE, TELEDATA, TELEPORT
-from sequence.app.teleportation.teledata_protocol import TeledataProtocol
+from ..message import Message
+from ..components.circuit import Circuit
+from ..kernel.process import Process
+from ..kernel.event import Event
+from ..utils import log
+from ..app.teleportation import TeleportationApp
+from ..constants import TELEGATE, TELEDATA, TELEPORT
+from ..app.teleportation.teledata_protocol import TeledataProtocol
 
 
 # Reservation / timing tuning

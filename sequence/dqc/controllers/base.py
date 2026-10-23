@@ -19,13 +19,13 @@ leaves to subclasses is *when* steps are sent and *how* completions advance the 
 """
 from __future__ import annotations
 
-from sequence.dqc.registry import QubitRegistry
 import time
+from ..registry import QubitRegistry
 
-from sequence.topology.node import ClassicalNode
-from sequence.message import Message
+from ..worker_program import DQCMessage, DQCMsgType
+from ...topology.node import ClassicalNode
+from ...message import Message
 
-from sequence.dqc.worker_program import DQCMessage, DQCMsgType
 
 
 def _session_identity(op) -> int:

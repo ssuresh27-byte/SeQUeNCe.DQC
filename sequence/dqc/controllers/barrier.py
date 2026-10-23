@@ -18,12 +18,12 @@ from __future__ import annotations
 import sys
 import time
 
-from sequence.kernel.process import Process
-from sequence.kernel.event import Event
-from sequence.message import Message
-import sequence.utils.log as log
+from .base import BaseController
+from ...kernel.process import Process
+from ...kernel.event import Event
+from ...message import Message
+from ...utils import log
 
-from sequence.dqc.controllers.base import BaseController
 
 
 class BarrierController(BaseController):

@@ -13,7 +13,7 @@ ignores. Two shapes:
   * :class:`~compilers.fgp.FGPCompiler` -- the monolithic time-sliced telegate +
     teledata hybrid, which does placement and per-slice move-generation together.
 """
-from sequence.dqc.program import CompiledProgram
+from ..program import CompiledProgram
 
 
 class CompilerBase:

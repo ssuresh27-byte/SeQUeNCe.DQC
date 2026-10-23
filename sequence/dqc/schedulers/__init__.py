@@ -8,7 +8,7 @@ buckets). It does NOT decide the execution layering: that is a property of the o
 The time-sliced telegate+teledata hybrid does placement and move-generation together, so it
 is a monolithic compiler in the :mod:`compilers` package (``FGPCompiler``).
 """
-from sequence.dqc.schedulers.base import SchedulerBase
-from sequence.dqc.schedulers.packed import PackedScheduler
+from .base import SchedulerBase
+from .packed import PackedScheduler
 
 __all__ = ["SchedulerBase", "PackedScheduler"]

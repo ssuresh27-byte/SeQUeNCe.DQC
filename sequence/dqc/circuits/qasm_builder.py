@@ -11,8 +11,8 @@ from __future__ import annotations
 import math
 import re
 
-from sequence.components.circuit import Circuit
-from sequence.dqc.circuits.base import CircuitBuilder
+from .base import CircuitBuilder
+from ...components.circuit import Circuit
 
 
 class QasmCircuitBuilder(CircuitBuilder):

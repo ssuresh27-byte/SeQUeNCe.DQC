@@ -5,7 +5,7 @@ import networkx as nx
 from scipy.optimize import quadratic_assignment
 from typing import Dict, Tuple
 
-from sequence.dqc.partitioners.base import PartitionerBase
+from .base import PartitionerBase
 
 
 class QAPPartitioner(PartitionerBase):

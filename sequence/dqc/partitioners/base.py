@@ -9,7 +9,7 @@ A partitioner + a scheduler compose into a static COMPILER (see :mod:`compilers`
 """
 from typing import Dict, List, Tuple
 
-from sequence.dqc.circuit_ops import get_interaction_weights
+from ..circuit_ops import get_interaction_weights
 
 
 class PartitionerBase:

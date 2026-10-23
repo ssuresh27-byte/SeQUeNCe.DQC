@@ -25,14 +25,14 @@ from collections import Counter
 
 import numpy as np
 
-import sequence.dqc.worker_program as wp
-from sequence.topology.dqc_net_topo import DQCNetTopo
-from sequence.components.circuit import Circuit
+from . import worker_program as wp
 
-from sequence.dqc.worker_program import TeleportationWorkerProgram
-from sequence.dqc.compilers import build_compiler
-from sequence.constants import KET_VECTOR_FORMALISM, DENSITY_MATRIX_FORMALISM
-from sequence.dqc.noise import KET_VECTOR_NOISE_FORMALISM, DENSITY_MATRIX_NOISE_FORMALISM
+from .worker_program import TeleportationWorkerProgram
+from .compilers import build_compiler
+from .noise import KET_VECTOR_NOISE_FORMALISM, DENSITY_MATRIX_NOISE_FORMALISM
+from ..components.circuit import Circuit
+from ..constants import KET_VECTOR_FORMALISM, DENSITY_MATRIX_FORMALISM
+from ..topology.dqc_net_topo import DQCNetTopo
 
 # (formalism, noise_active) -> the quantum-manager formalism id the Timeline is built with.
 # Noisy runs use the per-node noise manager (a subclass of the pristine one); noiseless

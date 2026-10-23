@@ -6,10 +6,10 @@ the :mod:`compilers` package). Each strategy lives in its own module and subclas
 :class:`PartitionerBase`. ``PARTITIONERS`` maps a name to the class;
 ``get_partitioner(name, ...)`` instantiates one.
 """
-from sequence.dqc.partitioners.base import PartitionerBase
-from sequence.dqc.partitioners.topo_aware import TopologyAwarePartitioner
-from sequence.dqc.partitioners.random import RandomPartitioner
-from sequence.dqc.partitioners.qap import QAPPartitioner
+from .base import PartitionerBase
+from .topo_aware import TopologyAwarePartitioner
+from .random import RandomPartitioner
+from .qap import QAPPartitioner
 
 PARTITIONERS = {
     "topo-aware": TopologyAwarePartitioner,

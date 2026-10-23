@@ -25,10 +25,10 @@ memory, then installs into the two vacated data slots without extra data memory.
 from collections import Counter, defaultdict
 from typing import Dict, List, Tuple
 
-from sequence.dqc.compilers.base import CompilerBase
-from sequence.dqc.partitioners import get_partitioner
-from sequence.dqc.program import build_program, stream_to_node_ops
-from sequence.dqc.circuit_ops import gate_fields
+from .base import CompilerBase
+from ..partitioners import get_partitioner
+from ..program import build_program, stream_to_node_ops
+from ..circuit_ops import gate_fields
 
 
 class FGPCompiler(CompilerBase):

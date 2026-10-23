@@ -3,7 +3,7 @@
 import networkx as nx
 from typing import Dict, Tuple
 
-from sequence.dqc.partitioners.base import PartitionerBase
+from .base import PartitionerBase
 
 
 class TopologyAwarePartitioner(PartitionerBase):

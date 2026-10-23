@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """BasicCompiler: static placement + op-generation (the DAG/barrier does the layering)."""
-from sequence.dqc.compilers.base import CompilerBase
-from sequence.dqc.partitioners import get_partitioner
-from sequence.dqc.schedulers.packed import PackedScheduler
-from sequence.dqc.program import build_program
+from .base import CompilerBase
+from ..partitioners import get_partitioner
+from ..schedulers.packed import PackedScheduler
+from ..program import build_program
 
 
 class BasicCompiler(CompilerBase):

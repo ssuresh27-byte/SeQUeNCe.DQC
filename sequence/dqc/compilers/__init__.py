@@ -13,9 +13,9 @@ when ``scheduler`` names one (e.g. ``"fgp"``, seeded by ``partitioner``), otherw
 selects a layering -- the DAG's canonical ASAP layering is used -- so it is ignored beyond
 picking the monolithic path.
 """
-from sequence.dqc.compilers.base import CompilerBase
-from sequence.dqc.compilers.basic import BasicCompiler
-from sequence.dqc.compilers.fgp import FGPCompiler
+from .base import CompilerBase
+from .basic import BasicCompiler
+from .fgp import FGPCompiler
 
 # monolithic compilers: selectable via the "scheduler" slot (they subsume placement+moves)
 MONOLITHIC = {"fgp": FGPCompiler}

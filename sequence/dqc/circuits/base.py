@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
-from sequence.components.circuit import Circuit
+from ...components.circuit import Circuit
 
 
 class CircuitBuilder(ABC):

@@ -8,8 +8,8 @@ translated; any other Qiskit gate raises a clear error. Qiskit is optional; only
 """
 from __future__ import annotations
 
-from sequence.components.circuit import Circuit
-from sequence.dqc.circuits.base import CircuitBuilder
+from .base import CircuitBuilder
+from ...components.circuit import Circuit
 
 try:
     from qiskit import QuantumCircuit

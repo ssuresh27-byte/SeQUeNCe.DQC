@@ -2,7 +2,7 @@
 """Packed / ASAP scheduler: independent gates share a controller step."""
 from collections import defaultdict
 
-from sequence.dqc.schedulers.base import SchedulerBase
+from .base import SchedulerBase
 
 
 class PackedScheduler(SchedulerBase):

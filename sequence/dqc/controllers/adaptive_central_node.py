@@ -26,10 +26,10 @@ import sys
 import time
 from collections import defaultdict
 
-from sequence.message import Message
-import sequence.utils.log as log
+from .base import BaseController
+from ...message import Message
+from ...utils import log
 
-from sequence.dqc.controllers.base import BaseController
 
 
 class AdaptiveController(BaseController):

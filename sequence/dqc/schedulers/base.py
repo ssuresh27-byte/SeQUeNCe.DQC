@@ -8,7 +8,7 @@ op-DAG's canonical ASAP layering (see :func:`sequence.dqc.program.build_op_dag`)
 """
 from typing import Dict, List
 
-from sequence.dqc.circuit_ops import gate_fields
+from ..circuit_ops import gate_fields
 
 
 class SchedulerBase:
