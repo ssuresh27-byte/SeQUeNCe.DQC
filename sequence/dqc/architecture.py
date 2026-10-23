@@ -23,6 +23,7 @@ from typing import Dict, List, Tuple
 
 import networkx as nx
 from ..utils import graphs
+from ..constants import SPEED_OF_LIGHT
 
 # Human-friendly node names; falls back to node{k} beyond the pool.
 _POOL = ["alice", "bob", "charlie", "david", "eve", "frank", "grace", "heidi",
@@ -200,10 +201,13 @@ class DQCArchitecture:
         ``(bsm_nodes, qchannels, cchannels)``. Parallels the edge loop in
         :func:`sequence.utils.nx_converter.generate_config`.
         """
-        # Fibre length per hop and the matching classical (heralding) delay: ~5e6 ps/km
-        # (light in fibre ~2e5 km/s). Longer links => each herald round-trip takes longer.
-        d = self.link_km
-        delay = int(d * 1_000_000)
+        # Fibre length per hop in METRES (SeQUeNCe optical channels measure `distance` in m, with
+        # light_speed = SPEED_OF_LIGHT = 2e-4 m/ps = 2e5 km/s, i.e. light *in fibre*), and the
+        # matching classical (heralding) delay as the propagation time over that length at the same
+        # speed. So a 5 km link genuinely simulates ~25 us delay and ~21% per-hop loss (0.2 dB/km).
+        # Longer links => more loss AND each herald round-trip takes longer.
+        dist_m = self.link_km * 1000.0
+        delay = int(dist_m / SPEED_OF_LIGHT)
         bsm_nodes, qch, cch, seed = [], [], [], 100
         for (u, v) in self.edges:
             bsm = f"BSM_{u}_{v}"
@@ -211,7 +215,7 @@ class DQCArchitecture:
                               "group": 0, "template": "teleportation"})
             seed += 1
             for r in (u, v):
-                qch.append({"source": r, "destination": bsm, "distance": d, "attenuation": 0.0002})
+                qch.append({"source": r, "destination": bsm, "distance": dist_m, "attenuation": 0.0002})
                 cch.append({"source": r, "destination": bsm, "delay": delay})
                 cch.append({"source": bsm, "destination": r, "delay": delay})
         for a in self.node_names:
