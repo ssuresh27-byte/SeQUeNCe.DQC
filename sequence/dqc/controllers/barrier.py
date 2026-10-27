@@ -1,4 +1,3 @@
-# File: barrier.py
 """Barrier controller -- a real node in the network topology.
 
 The controller is a :class:`~sequence.topology.node.ClassicalNode`: it exchanges
@@ -23,7 +22,6 @@ from ...kernel.process import Process
 from ...kernel.event import Event
 from ...message import Message
 from ...utils import log
-
 
 
 class BarrierController(BaseController):

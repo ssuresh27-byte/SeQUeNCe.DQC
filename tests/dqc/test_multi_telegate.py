@@ -2,7 +2,7 @@
 
 These exercise several telegates per run -- sequential (chain), concurrent
 (independent pairs packed into one step), and fan-out (one control, many
-targets) -- across both controllers and both static schedulers. They guard the
+targets) -- across both controllers with the static compiler. They guard the
 telegate-completion path, in particular the adaptive controller's per-node
 ``max(_pending)`` step attribution when multiple telegates are in flight.
 
@@ -14,6 +14,7 @@ import pytest
 from sequence.components.circuit import Circuit
 from sequence.dqc.architecture import make_star
 from sequence.dqc.runtime import run
+from sequence.dqc.compilers import BasicCompiler
 
 
 def _chain(n):
@@ -54,14 +55,13 @@ CIRCUITS = {
 
 
 @pytest.mark.parametrize("name", list(CIRCUITS))
-@pytest.mark.parametrize("scheduler", ["packed", "serial"])
 @pytest.mark.parametrize("controller", ["barrier", "adaptive"])
-def test_multi_telegate(name, scheduler, controller):
+def test_multi_telegate(name, controller):
     circ, min_tele = CIRCUITS[name]
     n = circ.size
     expected = (1 << n) - 1
-    res = run(circ, make_star(n, 1), partitioner="qap", scheduler=scheduler,
+    res = run(circ, make_star(n, 1), compiler=BasicCompiler(partitioner="qap"),
               controller=controller, expected=expected, seed=0)
-    assert res["measured"] == expected, f"{name}/{scheduler}/{controller}: got {res['measured']}"
+    assert res["measured"] == expected, f"{name}/{controller}: got {res['measured']}"
     assert res["reached"] >= res["steps"], "execution did not reach the final step"
     assert res["gates"] >= min_tele, f"expected >= {min_tele} telegates, got {res['gates']}"

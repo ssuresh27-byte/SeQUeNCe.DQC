@@ -45,8 +45,7 @@ class FGPCompiler(CompilerBase):
     # over-moves on meshes). Keep move_margin < 2*_CUR (>=2*_CUR blocks capacity moves).
     move_margin = 5 * _CUR // 4
 
-    def __init__(self, seed_partitioner: str = "topo-aware",
-                 lookahead: int = None, move_margin: float = None):
+    def __init__(self, seed_partitioner: str = "topo-aware", lookahead: int = None, move_margin: float = None):
         self.seed_partitioner = seed_partitioner
         if lookahead is not None:
             self.lookahead = lookahead

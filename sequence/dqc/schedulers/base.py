@@ -12,11 +12,37 @@ from ..circuit_ops import gate_fields
 
 
 class SchedulerBase:
-    """Common machinery for op-generators: slot bookkeeping + op bucketing.
+    """Shared slot bookkeeping and per-node operation grouping for a placed circuit.
+
+    Subclasses implement ``compile_circuit`` to generate operations and provisional
+    layers, using ``_bucketize`` to group them by node and role. Placement is supplied
+    separately; the operation DAG determines the final execution layers.
+
+    ``qubit_to_node`` identifies which node owns each logical qubit. ``data_owners``
+    is a two-layer dictionary that groups qubits by node and records their local
+    memory slots, rather than simply reversing ``qubit_to_node``. For example,
+    placement ``{0: "alice", 1: "bob", 2: "alice"}`` gives
+    ``{"alice": {0: 0, 2: 1}, "bob": {1: 0}}``.
+
+    ``buckets`` describes the work each node executes, grouped as
+    ``{node_name: {"local": [op_dict, ...], "remote": [op_dict, ...]}}``.
+    Local gates act entirely on one node; remote gates span nodes and are copied
+    into every participating node's remote bucket. Each operation records its
+    gate, target qubits, provisional layer/step, argument, and participating nodes.
+
+    Attributes:
+        n_qubits (int): Number of logical qubits in the circuit.
+        n_nodes (int): Number of computing nodes.
+        memory_capacity (int): Per-node memory capacity supplied to the generator.
+        node_names (List[str]): Computing-node names.
+        qubit_to_node (Dict[int, str]): Logical qubit to owning node.
+        data_owners (Dict[str, Dict[int, int]]): Node to logical-qubit-to-local-slot mapping;
+                                                 ``data_owners[node_name][logical_qubit]`` is the local slot.
+        buckets (Dict[str, Dict[str, list]]): Node to role to operation-list mapping;
+                                              roles are ``"local"`` and ``"remote"``.
     """
 
-    def __init__(self, n_qubits: int, n_nodes: int, memory_capacity: int,
-                 node_names: List[str] = None):
+    def __init__(self, n_qubits: int, n_nodes: int, memory_capacity: int,node_names: List[str] = None):
         self.n_qubits = n_qubits
         self.n_nodes = n_nodes
         self.memory_capacity = memory_capacity

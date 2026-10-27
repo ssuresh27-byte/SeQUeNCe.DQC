@@ -2,10 +2,12 @@ import numpy as np
 from networkx import Graph, dijkstra_path, exception, all_pairs_shortest_path_length
 
 from .topology import Topology as Topo
-from ..kernel.timeline import Timeline
 from .node import BSMNode
-from ..constants import SPEED_OF_LIGHT
 from .node import Node, DQCNode
+from ..kernel.timeline import Timeline
+from ..constants import SPEED_OF_LIGHT
+from ..dqc.controllers.barrier import BarrierController
+from ..dqc.controllers.adaptive_central_node import AdaptiveController
 
 
 class DQCNetTopo(Topo):
@@ -108,14 +110,9 @@ class DQCNetTopo(Topo):
     def _build_controller(self, node: dict):
         """Build the central controller (a pure executor) from its config entry's ``policy``.
 
-        Lazy-imports the DQC controllers so the topology package doesn't take a module-level
-        dependency on :mod:`sequence.dqc`. Compilation lives OUTSIDE the controller: the runtime
-        builds the compiler (from ``partitioner``/``scheduler``, or a custom object) and installs
-        the resulting program via ``controller.load``. The config's ``compiler`` spec is retained
-        only for reproducibility (it is written to a dumped config), not used here.
+        Compilation lives OUTSIDE the controller: the runtime
+        runs the required compiler object and installs the resulting program via ``controller.load``.
         """
-        from sequence.dqc.controllers.barrier import BarrierController
-        from sequence.dqc.controllers.adaptive_central_node import AdaptiveController
         policies = {"barrier": BarrierController, "adaptive": AdaptiveController}
         policy = node.get("policy", "barrier")
         if policy not in policies:

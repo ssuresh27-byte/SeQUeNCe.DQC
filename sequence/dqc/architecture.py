@@ -3,7 +3,7 @@
 
 A :class:`DQCArchitecture` is a *config-generation utility*: it captures a lean description
 of the physical network (nodes with a data-memory capacity, physical links, comm-memory size,
-optional per-node local noise, and the controller policy/compiler choice) and expands it via
+optional per-node local noise, and the controller policy) and expands it via
 :meth:`sim_config` into the full SeQUeNCe :class:`~sequence.topology.dqc_net_topo.DQCNetTopo`
 config the simulator consumes (a BSM node per edge + classical/quantum channels + the
 controller node, in the teleport-json layout). It does NO simulation and answers NO topology
@@ -62,13 +62,11 @@ class DQCArchitecture:
             qubit. Absent nodes default to ideal. (Physical Bell-pair fidelity is a
             link property and belongs in the memory template, not here.)
     """
-
     # per-node local-noise fields carried through to the DQCNode constructor
     NOISE_KEYS = ("one_qubit_gate_fid", "two_qubit_gate_fid", "measurement_fid", "t1", "t2")
 
-    def __init__(self, name: str, capacities: Dict[str, int] = None,
-                 edges: List[Tuple[str, str]] = None, comm_memo: int = 16,
-                 node_noise: Dict[str, dict] = None):
+    def __init__(self, name: str, capacities: Dict[str, int] = None, edges: List[Tuple[str, str]] = None, 
+                 comm_memo: int = 16, node_noise: Dict[str, dict] = None):
         self.name = name
         self.capacities = dict(capacities or {})
         self.edges = [tuple(e) for e in (edges or [])]
@@ -76,11 +74,8 @@ class DQCArchitecture:
         self.node_noise = {nm: dict(p) for nm, p in (node_noise or {}).items()}
         self.link_km = 5.0          # physical fibre length per hop (settable to sweep)
         self.mem_efficiency = 0.9   # memory (Bell-pair) efficiency (settable to sweep)
-        # Central controller declared inline in the sim config so DQCNetTopo builds+wires it:
-        # its scheduling policy and (named) compiler choice. A custom compiler OBJECT can't
-        # live in JSON -- pass it to run() to override the built one.
+        # Central controller declared inline so DQCNetTopo builds and wires its policy.
         self.controller_policy = "barrier"                                  # "barrier" | "adaptive"
-        self.compiler_spec = {"partitioner": "topo-aware", "scheduler": "fgp"}
 
     @property
     def node_names(self) -> List[str]:
@@ -175,8 +170,7 @@ class DQCArchitecture:
         """Load an architecture from its saved JSON configuration."""
         with open(path) as f:
             d = json.load(f)
-        return cls(d["name"], d["capacities"], d["edges"], d.get("comm_memo", 16),
-                   d.get("node_noise"))
+        return cls(d["name"], d["capacities"], d["edges"], d.get("comm_memo", 16), d.get("node_noise"))
 
     def generate_nodes(self, comm_memo: int = None) -> List[dict]:
         """DQCNode config entries (parallels :func:`sequence.utils.nx_converter.generate_nodes`).
@@ -211,8 +205,7 @@ class DQCArchitecture:
         bsm_nodes, qch, cch, seed = [], [], [], 100
         for (u, v) in self.edges:
             bsm = f"BSM_{u}_{v}"
-            bsm_nodes.append({"name": bsm, "type": "BSMNode", "seed": seed,
-                              "group": 0, "template": "teleportation"})
+            bsm_nodes.append({"name": bsm, "type": "BSMNode", "seed": seed, "group": 0, "template": "teleportation"})
             seed += 1
             for r in (u, v):
                 qch.append({"source": r, "destination": bsm, "distance": dist_m, "attenuation": 0.0002})
@@ -225,14 +218,13 @@ class DQCArchitecture:
         return bsm_nodes, qch, cch
 
     def generate_controller(self) -> Tuple[dict, List[dict]]:
-        """The central controller node (scheduling policy + named compiler) and its classical
-        channels to every DQC node. Returns ``(controller_node, cchannels)``; DQCNetTopo builds
-        and wires it. A custom compiler OBJECT can't live in JSON -- pass it to run() to
-        override the built one. A small control-plane delay keeps the barrier round-trip from
+        """The central controller node (scheduling policy) and its classical channels to every
+        DQC node. Returns ``(controller_node, cchannels)``; DQCNetTopo builds and wires it.
+        A small control-plane delay keeps the barrier round-trip from
         dominating the reported sim time.
         """
         node = {"name": "controller", "type": "Controller", "seed": 0,
-                "policy": self.controller_policy, "compiler": dict(self.compiler_spec)}
+                "policy": self.controller_policy}
         cch = [ch for nm in self.node_names for ch in
                ({"source": "controller", "destination": nm, "delay": 1},
                 {"source": nm, "destination": "controller", "delay": 1})]
@@ -247,11 +239,9 @@ class DQCArchitecture:
         nodes = self.generate_nodes(comm_memo)
         bsm_nodes, qch, cch = self.generate_channels()
         ctrl_node, ctrl_cch = self.generate_controller()
-        return {"templates": {"teleportation": {"MemoryArray": {"fidelity": 1,
-                                                                "efficiency": self.mem_efficiency}}},
-                "nodes": nodes + bsm_nodes + [ctrl_node],
-                "qchannels": qch, "cchannels": cch + ctrl_cch,
-                "stop_time": 10_000_000_000_000, "is_parallel": False}
+        return {"templates": {"teleportation": {"MemoryArray": {"fidelity": 1, "efficiency": self.mem_efficiency}}},
+                "nodes": nodes + bsm_nodes + [ctrl_node], "qchannels": qch, "cchannels": cch + ctrl_cch,
+                "stop_time": 10_000_000_000_000}
 
 
 def make_star(n_nodes: int, cap: int, comm_memo: int = 16, node_noise=None) -> DQCArchitecture:
@@ -260,12 +250,10 @@ def make_star(n_nodes: int, cap: int, comm_memo: int = 16, node_noise=None) -> D
     Wraps :func:`sequence.utils.graphs.build_star` (``star_graph(n_nodes-1)``: one
     center + ``n_nodes-1`` outer nodes).
 
-
     generators: build on SeQUeNCe's pre-packaged NetworkX graph builders
     """
     G = graphs.build_star(n_nodes - 1)
-    return DQCArchitecture.from_nx_graph(f"star{n_nodes}_cap{cap}", G, cap, comm_memo,
-                                     node_noise, order=range(n_nodes))
+    return DQCArchitecture.from_nx_graph(f"star{n_nodes}_cap{cap}", G, cap, comm_memo, node_noise, order=range(n_nodes))
 
 
 def make_grid(rows: int, cols: int, cap: int, comm_memo: int = 16, node_noise=None) -> DQCArchitecture:
@@ -275,8 +263,7 @@ def make_grid(rows: int, cols: int, cap: int, comm_memo: int = 16, node_noise=No
     row-major (``r*cols + c``)."""
     G = graphs.build_grid(rows, cols)
     order = [(r, c) for r in range(rows) for c in range(cols)]
-    return DQCArchitecture.from_nx_graph(f"grid{rows}x{cols}_cap{cap}", G, cap, comm_memo,
-                                     node_noise, order=order)
+    return DQCArchitecture.from_nx_graph(f"grid{rows}x{cols}_cap{cap}", G, cap, comm_memo, node_noise, order=order)
 
 
 def make_caveman(caves: int, size: int, cap: int, comm_memo: int = 16, node_noise=None) -> DQCArchitecture:
@@ -295,8 +282,7 @@ def make_caveman(caves: int, size: int, cap: int, comm_memo: int = 16, node_nois
                 edges.append((names[base + i], names[base + j]))
     for c in range(caves - 1):
         edges.append((names[c * size + size - 1], names[(c + 1) * size]))
-    return DQCArchitecture(f"caveman{caves}x{size}_cap{cap}", {nm: cap for nm in names}, edges,
-                       comm_memo, node_noise)
+    return DQCArchitecture(f"caveman{caves}x{size}_cap{cap}", {nm: cap for nm in names}, edges, comm_memo, node_noise)
 
 
 def max_node_degree(edges) -> int:

@@ -155,8 +155,7 @@ def build_op_dag(node_ops: Dict[str, Dict[str, List]]) -> OpDAG:
     return OpDAG(ops, preds, succ)
 
 
-def build_program(circuit, placement: Dict[int, str],
-                  data_owners: Dict[str, Dict[int, int]],
+def build_program(circuit, placement: Dict[int, str], data_owners: Dict[str, Dict[int, int]],
                   node_ops: Dict[str, Dict[str, List]]) -> CompiledProgram:
     """Assemble a CompiledProgram from a placement + slot map + op buckets.
 
@@ -165,8 +164,7 @@ def build_program(circuit, placement: Dict[int, str],
     layering rather than whatever order the op generator emitted."""
     dag = build_op_dag(node_ops)
     max_step, net_layers = summarize(node_ops)
-    return CompiledProgram(circuit, dict(placement), data_owners, node_ops,
-                           max_step, net_layers, dag)
+    return CompiledProgram(circuit, dict(placement), data_owners, node_ops, max_step, net_layers, dag)
 
 
 def stream_to_node_ops(stream, node_names, qubit_to_node, caps=None):

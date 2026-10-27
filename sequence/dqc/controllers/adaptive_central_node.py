@@ -1,4 +1,3 @@
-# File: adaptive_central_node.py
 """An ADAPTIVE (dataflow) controller -- an alternative to the lock-step barrier.
 
 Where :class:`barrier.BarrierController` replays a fixed plan one global

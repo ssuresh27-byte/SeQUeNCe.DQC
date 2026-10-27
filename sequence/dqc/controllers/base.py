@@ -1,4 +1,3 @@
-# File: base.py
 """Shared controller plumbing for driving the per-node worker programs.
 
 A DQC controller is a :class:`~sequence.topology.node.ClassicalNode` wired into the
@@ -81,7 +80,7 @@ class BaseController(ClassicalNode):
     def load(self, program):
         """Install a compiled ``program`` (produced by the runner) to execute and prepare the controller's run state.
 
-        Compilation happens OUTSIDE the controller: the runner builds the compiler, runs it
+        Compilation happens OUTSIDE the controller: the runner runs the supplied compiler
         (``compiler.compile(circuit, topology, seed)``), and hands the resulting plan here. The
         controller is a pure executor -- it seeds the registry from the program's initial
         placement and lets subclasses derive extra plan state, but never compiles itself.

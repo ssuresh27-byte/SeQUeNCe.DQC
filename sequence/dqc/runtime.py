@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Runtime harness: build the network, run, measure.
 
-``run(circuit, topology, ...)`` is the single entry point; it constructs a :class:`Run` (which
+``run(circuit, topology, compiler, ...)`` is the single entry point; it constructs a :class:`Run` (which
 holds the config for the invocation) and drives its shot loop. Per shot, :meth:`Run._one_shot`
 expands the topology to a DQCNetTopo config (which builds the DQC nodes + the central controller +
-channels), builds + runs the compiler, hands the plan to the controller (``ctrl.load``) which
+channels), runs the supplied compiler, hands the plan to the controller (``ctrl.load``) which
 drives its barrier over classical channels, then reads out the data qubits. The per-shot pipeline
-reads top-to-bottom: ``_build_config`` -> build net -> build compiler + ``compile`` ->
+reads top-to-bottom: ``_build_config`` -> build net -> ``compiler.compile`` ->
 ``ctrl.load`` -> ``_register_noise`` -> ``_attach_agents`` -> run -> ``_measure``.
 
 Purification never fires: ``purification_policy`` sets a LOW reservation target fidelity, so a
@@ -28,7 +28,6 @@ import numpy as np
 from . import worker_program as wp
 
 from .worker_program import TeleportationWorkerProgram
-from .compilers import build_compiler
 from .noise import KET_VECTOR_NOISE_FORMALISM, DENSITY_MATRIX_NOISE_FORMALISM
 from ..components.circuit import Circuit
 from ..constants import KET_VECTOR_FORMALISM, DENSITY_MATRIX_FORMALISM
@@ -95,27 +94,25 @@ def _program_metrics(program, topology):
 class Run:
     """One ``run(...)`` invocation: holds the config and drives the shot loop.
 
+    ``compiler`` is required and must implement ``compile(circuit, topology, seed)``.
     Constructing it validates + stores the arguments and computes derived config (the data qubits
     to read out, and whether any node is noisy). :meth:`execute` runs ``shots`` shots -- each shot's
     pipeline is :meth:`_one_shot` (build config -> build net -> compile -> register noise -> attach
     agents -> run timeline -> measure) -- then assembles the result dict.
     """
 
-    def __init__(self, circuit, topology, partitioner="topo-aware", scheduler="fgp", seed=0,
-                 controller="barrier", data_qubits=None, expected=None,
-                 shots=1, meas_seed=9479, compiler=None, dump_config=None, formalism="ket"):
+    def __init__(self, circuit, topology, compiler, seed: int = 0, controller: str = "barrier",
+                 data_qubits=None, expected=None, shots=1, meas_seed=9479, dump_config=None, formalism="ket"):
         if formalism not in ("ket", "density"):
             raise ValueError(f"formalism must be 'ket' or 'density', got {formalism!r}.")
         self.circuit = circuit
         self.topology = topology
-        self.partitioner = partitioner
-        self.scheduler = scheduler
+        self.compiler = compiler
         self.seed = seed
         self.controller = controller
         self.expected = expected
         self.shots = shots
         self.meas_seed = meas_seed
-        self.compiler = compiler
         self.dump_config = dump_config
         self.formalism = formalism
 
@@ -132,10 +129,9 @@ class Run:
 
     def _build_config(self) -> dict:
         """The DQCNetTopo config for one shot: the topology's sim_config with the chosen controller
-        policy + compiler, the state formalism, and memory sized to the circuit. Per-shot pipeline steps.
+        policy, the state formalism, and memory sized to the circuit. Per-shot pipeline steps.
         """
         self.topology.controller_policy = self.controller
-        self.topology.compiler_spec = {"partitioner": self.partitioner, "scheduler": self.scheduler}
         config = self.topology.sim_config()
         config["formalism"] = _FORMALISMS[(self.formalism, self.noise_active)]
         for nd in config["nodes"]:                   # data memory = the node's TRUE capacity; comm
@@ -204,11 +200,8 @@ class Run:
             qm = tl.quantum_manager
             qn = {node.name: node for node in net.nodes[DQCNetTopo.DQC_NODE]}
             ctrl = net.controller                       # a bare executor built + wired by DQCNetTopo
-            # Compilation lives here, not in the controller: build the compiler (a custom object
-            # overrides the named partitioner/scheduler), run it against the live net, and install
-            # the resulting plan into the controller (which seeds its registry from it).
-            compiler = self.compiler or build_compiler(self.partitioner, self.scheduler)
-            program = compiler.compile(self.circuit, net, seed=self.seed)
+            # Compile against the live network and install the resulting plan into the controller
+            program = self.compiler.compile(self.circuit, net, seed=self.seed)
             ctrl.load(program)
             self._register_noise(qn, qm, noise_seed)
             metrics = _program_metrics(program, net)
@@ -228,8 +221,8 @@ class Run:
         meas_rng = np.random.default_rng(self.meas_seed)
         successes, hist_shots, last = 0, Counter(), None
         for shot_idx in range(max(1, self.shots)):
-            measured, reached, program, metrics, wall, sim_ms = self._one_shot(
-                meas_rng, self.meas_seed + 1000 + shot_idx)
+            noise_seed = self.meas_seed + 1000 + shot_idx
+            measured, reached, program, metrics, wall, sim_ms = self._one_shot(meas_rng, noise_seed)
             hist_shots[measured] += 1
             if self.expected is not None and measured == self.expected and reached >= program.max_step:
                 successes += 1
@@ -241,28 +234,24 @@ class Run:
                   "steps": program.max_step, "nodes_used": len(set(program.qubit_to_node.values())),
                   "sim_ms": sim_ms, "wall": wall, "reached": reached}
         if self.shots > 1 or self.noise_active:
-            result.update(shots=max(1, self.shots), successes=successes,
-                          success_prob=successes / max(1, self.shots),
+            result.update(shots=max(1, self.shots), successes=successes, success_prob=successes / max(1, self.shots),
                           measured_hist=dict(sorted(hist_shots.items())))
         else:
-            result["ok"] = (self.expected is not None and measured == self.expected
-                            and reached >= program.max_step)
+            result["ok"] = (self.expected is not None and measured == self.expected and reached >= program.max_step)
         return result
 
 
-def run(circuit, topology, partitioner="topo-aware", scheduler="fgp", seed=0,
+def run(circuit, topology, compiler, seed=0,
         controller="barrier", data_qubits=None, expected=None,
-        shots=1, meas_seed=9479, compiler=None, dump_config=None,
-        formalism="ket") -> dict:
+        shots=1, meas_seed=9479, dump_config=None, formalism="ket") -> dict:
     """Compile + simulate ``circuit`` on ``topology`` and read out the data qubits.
 
-    ``partitioner`` + ``scheduler`` select a built-in compiler (static pipeline, or the
-    monolithic FGP hybrid when ``scheduler="fgp"``). Alternatively, pass a ready-made
-    ``compiler`` object to run ANY custom or external compiler: it need only implement
-    ``compile(circuit, topology, seed) -> CompiledProgram``. This is the general
-    extension point---a user's own partitioner/scheduler, a whole new compiler, or an
-    external tool's output wrapped in an adapter (e.g. :class:`AmaroCompiler`)---all
-    execute end-to-end on the physically simulated network through this one hook.
+    ``compiler`` is a required, ready-made compiler object implementing
+    ``compile(circuit, topology, seed) -> CompiledProgram``. Configure placement and
+    scheduling on the compiler itself; for example, pass
+    ``compiler=FGPCompiler()`` for FGP compilation or
+    ``compiler=BasicCompiler(partitioner="qap")`` for static QAP placement. External
+    tools can supply their compiled programs through an adapter with the same interface.
     ``controller`` is "barrier" or "adaptive".
 
     Noise: noise is entirely per-node -- declared on the topology (each DQCNode's
@@ -282,7 +271,6 @@ def run(circuit, topology, partitioner="topo-aware", scheduler="fgp", seed=0,
     gets simulated (teleport-json layout, per-node noise inline on each DQCNode), so it
     can be inspected. Written once, before the first shot.
     """
-    return Run(circuit, topology, partitioner=partitioner, scheduler=scheduler, seed=seed,
+    return Run(circuit, topology, compiler, seed=seed,
                 controller=controller, data_qubits=data_qubits, expected=expected, shots=shots,
-                meas_seed=meas_seed, compiler=compiler, dump_config=dump_config,
-                formalism=formalism).execute()
+                meas_seed=meas_seed, dump_config=dump_config, formalism=formalism).execute()
