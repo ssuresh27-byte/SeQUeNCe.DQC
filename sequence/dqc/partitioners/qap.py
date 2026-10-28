@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Placement via the Quadratic Assignment Problem (scipy FAQ solver)."""
 import numpy as np
 import networkx as nx

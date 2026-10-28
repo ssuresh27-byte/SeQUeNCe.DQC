@@ -9,7 +9,7 @@ participate in it, and keeps MANY steps in flight at once. It reacts to completi
 chain doesn't wait on a slow, unrelated one, and local work overlaps network work.
 
 Dependencies come from qubit reuse: a step that touches qubit q depends on the most
-recent earlier step that also touched q (the scheduler's layers are already a valid
+recent earlier step that also touched q (the operation DAG's layers are already a valid
 topological order; this just recovers the finer per-qubit DAG).
 
 Constraint: the worker program attributes a completing telegate to ``max(self._pending)``
@@ -44,7 +44,7 @@ class AdaptiveController(BaseController):
         """
         # Source the per-step structure from the program's first-class op-DAG (each op carries
         # its ASAP layer, qubits, kind, and owning nodes) rather than re-deriving it from the
-        # per-node op buckets. The finer per-op dependencies collapse to per-step edges below.
+        # per-node operations. The finer per-op dependencies collapse to per-step edges below.
         self.participants = defaultdict(set)   # step -> node names with an op there
         self.is_net = defaultdict(bool)        # step -> touches the network?
         step_qubits = defaultdict(set)         # step -> qubits it acts on

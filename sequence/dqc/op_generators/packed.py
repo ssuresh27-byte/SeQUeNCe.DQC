@@ -1,18 +1,19 @@
-#!/usr/bin/env python3
-"""Packed / ASAP scheduler: independent gates share a controller step."""
+"""Generate per-node operations with provisional ASAP layers."""
 from collections import defaultdict
 
-from .base import SchedulerBase
+from .base import OpGeneratorBase
 
 
-class PackedScheduler(SchedulerBase):
-    """Packed / ASAP scheduler: independent gates (no shared-qubit dependency) are
-    packed into the SAME controller step, so they run in parallel."""
+class PackedOpGenerator(OpGeneratorBase):
+    """Generate operations with independent gates packed into provisional layers.
+
+    The operation DAG recomputes the final execution layers when building the program.
+    """
 
     def compile_circuit(self, circuit):
         raw = getattr(circuit, "ops", getattr(circuit, "gates", []))
         layers = self._assign_layers(self._build_deps(raw), len(raw), raw)
-        return self._bucketize(raw, layers)
+        return self._group_ops_by_node(raw, layers)
 
     @staticmethod
     def _build_deps(raw_ops):

@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Runtime harness: build the network, run, measure.
 
 ``run(circuit, topology, compiler, ...)`` is the single entry point; it constructs a :class:`Run` (which

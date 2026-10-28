@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """QuTiP-backed circuit builder: turn a ``qutip_qip`` QubitCircuit into a SeQUeNCe Circuit.
 
 Lets DQC circuits be written in the familiar QuTiP ``QubitCircuit`` form and consumed by

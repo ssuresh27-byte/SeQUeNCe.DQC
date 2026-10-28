@@ -1,6 +1,6 @@
 """Tests for the op-level dependency DAG (program.build_op_dag).
 
-The DAG is derived from the compiler's per-node op buckets and is the first-class
+The DAG is derived from the compiler's per-node operations and is the first-class
 structure the controllers execute: the barrier layers it into ASAP waves, the adaptive
 path walks it by dependency. These guard that (a) the ops are deduped across the nodes
 that record them, (b) dependencies are exactly qubit-reuse edges, and (c) moves appear.

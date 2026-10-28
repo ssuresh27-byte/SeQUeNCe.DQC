@@ -1,8 +1,7 @@
-#!/usr/bin/env python3
 """BasicCompiler: static placement + op-generation (the DAG/barrier does the layering)."""
 from .base import CompilerBase
 from ..partitioners import get_partitioner
-from ..schedulers.packed import PackedScheduler
+from ..op_generators.packed import PackedOpGenerator
 from ..program import build_program
 
 
@@ -10,11 +9,11 @@ class BasicCompiler(CompilerBase):
     """Static compiler: a placement PARTITIONER + op-generation.
 
     ``compile`` = partition the qubits onto the topology (static, unlike the FGP hybrid which
-    re-partitions per time slice), then generate the per-node op buckets (which gates are local
+    re-partitions per time slice), then generate the per-node operations (which gates are local
     vs. telegates) on that fixed placement. It does NOT schedule the execution: the layering
     (which ops run in which wave) is a property of the op-DAG (``build_program`` computes the
     canonical ASAP layering from the dependency graph), and the barrier replays that. The
-    op-generator here is the packed bucketizer -- its own layering is superseded by the DAG's.
+    op-generator here is the packed operation generator -- its own layering is superseded by the DAG's.
     """
 
     def __init__(self, partitioner="topo-aware"):
@@ -26,7 +25,7 @@ class BasicCompiler(CompilerBase):
         part = get_partitioner(self.partitioner_name, n, names)
         placement = part.partition(circuit, topology, seed=seed)
 
-        gen = PackedScheduler(n, len(names), n, node_names=names)   # op-generation (bucketing)
+        gen = PackedOpGenerator(n, len(names), n, node_names=names)   # op-generation (operation grouping)
         gen.qubit_to_node = dict(placement)
         data_owners = gen.get_data_owners(placement)
         gen.data_owners = data_owners

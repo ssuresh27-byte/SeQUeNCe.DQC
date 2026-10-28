@@ -1,10 +1,9 @@
-#!/usr/bin/env python3
 """The compiled-program artifact shared by the compiler stack and the runtime.
 
 A :class:`CompiledProgram` is everything the simulation runtime needs, produced once by a
 compiler (placement + op-generation): the placement, the per-node data-slot map, the per-node
-op buckets (local / remote / move / swap), and the op-level dependency :class:`OpDAG`. The DAG's
-canonical ASAP layering is stamped back onto the op buckets as each op's ``step`` (see
+operation groups (local / remote / move / swap), and the op-level dependency :class:`OpDAG`. The DAG's
+canonical ASAP layering is stamped back onto the operation groups as each op's ``step`` (see
 :func:`build_op_dag`); the barrier replays those waves, the adaptive path walks the DAG.
 """
 from __future__ import annotations
@@ -65,7 +64,7 @@ class CompiledProgram:
 
 
 def summarize(node_ops: Dict[str, Dict[str, List]]):
-    """(max_step, net_layers) for a node_ops bucket map. ``net_layers`` are the
+    """(max_step, net_layers) for a node_ops mapping. ``net_layers`` are the
     steps carrying real network cost -- a telegate (remote) or a teledata move --
     which the controller charges the network delay to."""
     max_step = max((op["layer"] for grp in node_ops.values()
@@ -76,9 +75,9 @@ def summarize(node_ops: Dict[str, Dict[str, List]]):
 
 
 def build_op_dag(node_ops: Dict[str, Dict[str, List]]) -> OpDAG:
-    """Derive the op-level dependency DAG from per-node op buckets.
+    """Derive the op-level dependency DAG from per-node operations.
 
-    Dedups the ops the buckets record on more than one node (a remote gate lives on both
+    Dedups the ops the operation groups record on more than one node (a remote gate lives on both
     parties; a move or swap on both endpoints), orders them by their ASAP ``layer``, and
     links each op to the most recent earlier op touching a shared qubit. This is the same
     per-qubit dependency the adaptive controller recovers today, lifted to op granularity
@@ -143,7 +142,7 @@ def build_op_dag(node_ops: Dict[str, Dict[str, List]]) -> OpDAG:
             succ[p].add(i)
 
     # Canonical ASAP layer = longest dependency-chain depth, computed from the DAG itself (NOT
-    # from any compile-time scheduler). This IS the layering; the barrier replays it as waves,
+    # from any compile-time operation generator). This IS the layering; the barrier replays it as waves,
     # the adaptive path ignores it. Write it back onto the source op dicts as step/layer so the
     # per-step machinery (barrier broadcast, _ops_for) uses the DAG's layering.
     for i in ops:                         # ops are in topological order (entries sorted above)
@@ -157,10 +156,10 @@ def build_op_dag(node_ops: Dict[str, Dict[str, List]]) -> OpDAG:
 
 def build_program(circuit, placement: Dict[int, str], data_owners: Dict[str, Dict[int, int]],
                   node_ops: Dict[str, Dict[str, List]]) -> CompiledProgram:
-    """Assemble a CompiledProgram from a placement + slot map + op buckets.
+    """Assemble a CompiledProgram from a placement + slot map + operation groups.
 
     Builds the op-DAG FIRST -- it computes the canonical ASAP layering and stamps it back onto
-    the op buckets -- so ``summarize`` (and the barrier's step machinery) read the DAG's
+    the operation groups -- so ``summarize`` (and the barrier's step machinery) read the DAG's
     layering rather than whatever order the op generator emitted."""
     dag = build_op_dag(node_ops)
     max_step, net_layers = summarize(node_ops)
@@ -168,8 +167,8 @@ def build_program(circuit, placement: Dict[int, str], data_owners: Dict[str, Dic
 
 
 def stream_to_node_ops(stream, node_names, qubit_to_node, caps=None):
-    """Serialize an ordered op stream into per-node, per-step buckets, assigning COMPACT physical
-    data slots with STEP-SAFE timing. Returns ``(buckets, data_owners)``.
+    """Serialize an ordered op stream into per-node, per-step operation groups, assigning COMPACT physical
+    data slots with STEP-SAFE timing. Returns ``(node_ops, data_owners)``.
 
     The caller's ``stream`` fixes WHERE qubits go and in WHAT ORDER (each move already emitted
     after the departure that frees its destination slot). This function is the single authority
@@ -202,7 +201,7 @@ def stream_to_node_ops(stream, node_names, qubit_to_node, caps=None):
         data_owners[nm][q] = slot_of[q]
 
     ready: Dict[int, int] = {q: 0 for q in qubit_to_node}     # next step each qubit is available
-    buckets = {nm: {"local": [], "remote": [], "move": [], "swap": []} for nm in node_names}
+    node_ops = {nm: {"local": [], "remote": [], "move": [], "swap": []} for nm in node_names}
     for op in stream:
         if op[0] == "move":
             q, dest, src = op[1], op[2], op[3]            # ("move", q, dest, src[, legacy_slot])
@@ -218,8 +217,8 @@ def stream_to_node_ops(stream, node_names, qubit_to_node, caps=None):
             ready[q] = L + 1
             info = {"layer": L, "step": L, "qubit": q, "dest": dest, "dest_slot": slot,
                     "src": src, "src_slot": old_slot, "nodes": sorted({src, dest})}
-            buckets[src]["move"].append(dict(info))
-            buckets[dest]["move"].append(dict(info))
+            node_ops[src]["move"].append(dict(info))
+            node_ops[dest]["move"].append(dict(info))
         elif op[0] == "swap":
             _, a, na, b, nb = op
             if a == b or na == nb or node_of[a] != na or node_of[b] != nb:
@@ -229,7 +228,7 @@ def stream_to_node_ops(stream, node_names, qubit_to_node, caps=None):
             info = {"layer": L, "step": L, "qubits": [a, b], "nodes": [na, nb],
                     "slots": [sa, sb]}
             for nm in (na, nb):
-                buckets[nm]["swap"].append(dict(info))
+                node_ops[nm]["swap"].append(dict(info))
             node_of[a], node_of[b] = nb, na
             slot_of[a], slot_of[b] = sb, sa
             ready[a] = ready[b] = L + 1
@@ -242,8 +241,8 @@ def stream_to_node_ops(stream, node_names, qubit_to_node, caps=None):
             info = {"layer": L, "step": L, "gate": name.lower(), "targets": list(qs),
                     "arg": arg, "nodes": sorted(nodes)}
             if len(nodes) == 1:
-                buckets[next(iter(nodes))]["local"].append(info)
+                node_ops[next(iter(nodes))]["local"].append(info)
             else:
                 for nm in nodes:
-                    buckets[nm]["remote"].append(dict(info))
-    return buckets, data_owners
+                    node_ops[nm]["remote"].append(dict(info))
+    return node_ops, data_owners

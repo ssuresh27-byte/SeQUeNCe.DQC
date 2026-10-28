@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Random placement compiler -- the naive, topology-unaware baseline."""
 import random
 from typing import Dict, Tuple

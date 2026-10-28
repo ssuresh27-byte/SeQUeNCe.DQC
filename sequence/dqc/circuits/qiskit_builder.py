@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Qiskit-backed circuit builder: turn a Qiskit ``QuantumCircuit`` into a SeQUeNCe Circuit.
 
 Lets DQC circuits be written in the familiar Qiskit form and consumed by the DQC compiler, which

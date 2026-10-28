@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """DQC topology config generator -- a lean spec that expands into a DQCNetTopo config.
 
 A :class:`DQCArchitecture` is a *config-generation utility*: it captures a lean description

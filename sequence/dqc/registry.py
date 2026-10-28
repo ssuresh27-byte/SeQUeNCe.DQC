@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """QubitRegistry -- the controller-owned logical<->physical<->key map for a DQC run.
 
 One object, created and owned by the central controller (see

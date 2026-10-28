@@ -12,9 +12,8 @@ class StreamCompiler:
         self.placement, self.stream = placement, stream
 
     def compile(self, circuit, topology, seed=0):
-        buckets, owners = stream_to_node_ops(self.stream, topology.node_names,
-                                            self.placement, topology.capacities)
-        self.program = build_program(circuit, self.placement, owners, buckets)
+        node_ops, owners = stream_to_node_ops(self.stream, topology.node_names, self.placement, topology.capacities)
+        self.program = build_program(circuit, self.placement, owners, node_ops)
         return self.program
 
 
@@ -54,9 +53,9 @@ def test_swap_then_reuse_vacated_slot_keeps_dag_order():
     placement = {0: 'alice', 1: 'bob', 2: 'charlie'}
     stream = [('swap', 0, 'alice', 1, 'bob'), ('move', 1, 'charlie', 'alice'),
               ('move', 2, 'alice', 'charlie'), ('gate', 'x', [2], None)]
-    buckets, owners = stream_to_node_ops(stream, list(['alice', 'bob', 'charlie']),
-                                        placement, dict(alice=1, bob=1, charlie=2))
-    program = build_program(Circuit(3), placement, owners, buckets)
+    node_ops, owners = stream_to_node_ops(stream, list(['alice', 'bob', 'charlie']),
+                                          placement, dict(alice=1, bob=1, charlie=2))
+    program = build_program(Circuit(3), placement, owners, node_ops)
     ops = list(program.dag.ops.values())
     assert [op.kind for op in ops] == ['swap', 'move', 'move', 'local']
     assert [op.layer for op in ops] == [0, 1, 2, 3]

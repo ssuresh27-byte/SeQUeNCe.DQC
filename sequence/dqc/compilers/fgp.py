@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """FGPCompiler -- Fine-Grained (time-sliced) Partitioning with relaxed OEE.
 
 The literature hybrid telegate + teledata compiler (Baker, Duckering, Hoffman,
@@ -11,7 +10,7 @@ qubit->module assignment PER TIME SLICE (rOEE local search over a lookahead-
 weighted cut, capacity-bound). Between slices a qubit whose module changed is
 teleported (a teledata "move"); residual cross-module gates within a slice fall
 back to telegates. So it does placement and scheduling together -- there are no
-swappable inner partitioner/scheduler layers.
+swappable inner partitioner/operation-generator layers.
 
 It seeds slice 0 from a placement partitioner (default topo-aware) -- a good seed
 matters because with the tuned ``move_margin`` the compiler makes few/no moves on
@@ -65,7 +64,7 @@ class FGPCompiler(CompilerBase):
             self.seed_partitioner, self.n_qubits, self.node_names).partition(
             circuit, topology, seed=seed)
 
-        node_ops, data_owners = self._compile_circuit(circuit)   # scheduler assigns compact slots
+        node_ops, data_owners = self._compile_circuit(circuit)   # stream converter assigns compact slots
         return build_program(circuit, self.qubit_to_node, data_owners, node_ops)
 
     def _caps(self) -> Dict[str, int]:
@@ -80,7 +79,7 @@ class FGPCompiler(CompilerBase):
         caps = self._caps()
 
         A = dict(self.qubit_to_node)                             # current assignment
-        # Preserve relocation order; the shared scheduler assigns physical slots.
+        # Preserve relocation order; the shared stream converter assigns physical slots.
         # Swaps exchange occupied slots and cost two teleportations.
         self.move_count = 0
         stream: List[tuple] = []
@@ -93,7 +92,7 @@ class FGPCompiler(CompilerBase):
             for gi in gate_idxs:
                 name, qs, arg = parsed[gi]
                 stream.append(("gate", name, list(qs), arg))
-        return self._schedule_and_bucketize(stream)
+        return self._group_stream_ops_by_node(stream)
 
     @staticmethod
     def _time_slices(parsed) -> List[List[int]]:
@@ -184,10 +183,9 @@ class FGPCompiler(CompilerBase):
             sizes[M] += 1
             A[q] = M
 
-    def _schedule_and_bucketize(self, stream):
-        """Assign dependency layers and bucket the operation stream by node.
-        layering (packed by qubit dependency) + bucketize
+    def _group_stream_ops_by_node(self, stream):
+        """Assign dependency layers and group the operation stream by node.
         """
-        # placement/order are already fixed in ``stream``; the shared scheduler assigns compact
+        # placement/order are already fixed in ``stream``; the shared stream converter assigns compact
         # physical slots + step-safe timing (see program.stream_to_node_ops).
         return stream_to_node_ops(stream, self.node_names, self.qubit_to_node, self._caps())

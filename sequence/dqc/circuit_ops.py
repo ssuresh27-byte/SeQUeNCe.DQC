@@ -1,5 +1,4 @@
-#!/usr/bin/env python3
-"""Shared circuit-parsing helpers used by both placement compilers and schedulers.
+"""Shared circuit-parsing helpers used by both placement compilers and operation generators.
 
 A DQC ``Circuit`` op is either a ``(name, [qubits], arg?)`` tuple or a SeQUeNCe
 gate object exposing ``.name`` / ``.get_all_qubits()``. These free functions

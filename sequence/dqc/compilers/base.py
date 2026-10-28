@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Base class for COMPILERS -- circuit + topology -> CompiledProgram (offline).
 
 Compilation is fully offline: the whole plan (placement + the ops + their dependency

@@ -1,11 +1,10 @@
-#!/usr/bin/env python3
 """Base class for placement PARTITIONERS -- decide WHERE each qubit lives.
 
 A partitioner maps logical qubits onto physical nodes, respecting per-node memory
 capacity. Concrete strategies (topo-aware, random, qap) live in their
 own modules and subclass :class:`PartitionerBase`, overriding ``configure_topology``
 and ``partition_qubits``. The one-shot entry point is ``partition(circuit, topology)``.
-A partitioner + a scheduler compose into a static COMPILER (see :mod:`compilers`).
+A partitioner + an operation generator compose into a static COMPILER (see :mod:`compilers`).
 """
 from typing import Dict, List, Tuple
 

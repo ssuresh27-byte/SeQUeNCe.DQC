@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Topology-aware placement compiler (Andres-Martinez et al. 2023)."""
 import networkx as nx
 from typing import Dict, Tuple

@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Base class for logical-circuit builders consumed by the DQC compiler.
 
 A :class:`CircuitBuilder` produces a *topology-neutral* logical circuit (a

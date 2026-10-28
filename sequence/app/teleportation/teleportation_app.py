@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """TeleportationApp -- one node-attached app that runs BOTH teleported gates and qubit moves.
 
 A :class:`~sequence.topology.node.DQCNode` is a :class:`QuantumRouter`, so it has a SINGLE

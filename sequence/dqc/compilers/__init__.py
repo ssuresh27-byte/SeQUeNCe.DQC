@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Compilers -- circuit + topology -> CompiledProgram (the whole offline plan).
 
 Two shapes of compiler:

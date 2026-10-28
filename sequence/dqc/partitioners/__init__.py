@@ -1,7 +1,6 @@
-#!/usr/bin/env python3
 """Partitioners -- decide WHERE each qubit lives (placement: qubit -> node).
 
-A partitioner is one half of a static COMPILER (the other half is a scheduler; see
+A partitioner is one half of a static COMPILER (the other half is an operation generator; see
 the :mod:`compilers` package). Each strategy lives in its own module and subclasses
 :class:`PartitionerBase`. ``PARTITIONERS`` maps a name to the class;
 ``get_partitioner(name, ...)`` instantiates one.

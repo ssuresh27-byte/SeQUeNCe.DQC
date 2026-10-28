@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """OpenQASM-backed circuit builder: parse an OpenQASM 2.0 program into a SeQUeNCe Circuit.
 
 Self-contained (no external QASM dependency): parses the subset of OpenQASM 2.0 whose gates map

@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """DQC per-node noise managers + the uniform config.
 
 The base ket/density quantum managers stay exactly as-pulled (a plain ideal ket manager;
