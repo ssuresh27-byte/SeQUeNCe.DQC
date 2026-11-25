@@ -9,10 +9,11 @@ controller node, in the teleport-json layout). It does NO simulation and answers
 queries -- once a :class:`DQCNetTopo` is built from the config, THAT is the source of truth
 (hop distances, capacities, node names; see :mod:`sequence.dqc.runtime`).
 
-The generators (:func:`make_star`, :func:`make_grid`, :func:`make_caveman`) build on
+The generators (:func:`make_star`, :func:`make_grid`, :func:`make_linear`, :func:`make_lollipop`, :func:`make_caveman`) build on
 top of SeQUeNCe's pre-packaged graph builders in :mod:`sequence.utils.graphs`, so DQC
 topologies reuse the same NetworkX generators the router configs use. Any NetworkX graph can
 be turned into a DQCArchitecture via :meth:`DQCArchitecture.from_nx_graph`.
+
 """
 from __future__ import annotations
 
@@ -263,6 +264,24 @@ def make_grid(rows: int, cols: int, cap: int, comm_memo: int = 16, node_noise=No
     G = graphs.build_grid(rows, cols)
     order = [(r, c) for r in range(rows) for c in range(cols)]
     return DQCArchitecture.from_nx_graph(f"grid{rows}x{cols}_cap{cap}", G, cap, comm_memo, node_noise, order=order)
+
+
+def make_linear(n_nodes: int, cap: int, comm_memo: int = 16, node_noise=None) -> DQCArchitecture:
+    """Path of n_nodes nodes, named in path order.
+
+    Wraps :func:`sequence.utils.graphs.build_linear`.
+    """
+    G = graphs.build_linear(n_nodes)
+    return DQCArchitecture.from_nx_graph(f"linear{n_nodes}_cap{cap}", G, cap, comm_memo, node_noise, order=range(n_nodes))
+
+
+def make_lollipop(m: int, n: int, cap: int, comm_memo: int = 16, node_noise=None) -> DQCArchitecture:
+    """Clique of m nodes connected to a path of n additional nodes.
+
+    Wraps :func:`sequence.utils.graphs.build_lollipop`; the clique is named first, followed by the path in order.
+    """
+    G = graphs.build_lollipop(m, n)
+    return DQCArchitecture.from_nx_graph(f"lollipop{m}x{n}_cap{cap}", G, cap, comm_memo, node_noise, order=range(m + n))
 
 
 def make_caveman(caves: int, size: int, cap: int, comm_memo: int = 16, node_noise=None) -> DQCArchitecture:

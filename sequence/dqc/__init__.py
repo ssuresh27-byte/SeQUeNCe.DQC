@@ -11,6 +11,8 @@ from .architecture import (
     node_names,
     make_star,
     make_grid,
+    make_linear,
+    make_lollipop,
     make_caveman,
 )
 
@@ -19,5 +21,7 @@ __all__ = [
     "node_names",
     "make_star",
     "make_grid",
+    "make_linear",
+    "make_lollipop",
     "make_caveman",
 ]
